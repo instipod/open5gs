@@ -59,6 +59,8 @@ typedef struct upf_context_s {
     /* IPv6 framed routes trie */
     struct upf_route_trie_node *ipv6_framed_routes;
 
+    bool hairpin_enabled;   /* UE-to-UE hairpin forwarding */
+
     ogs_list_t sess_list;
 } upf_context_t;
 

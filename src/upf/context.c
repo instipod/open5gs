@@ -109,6 +109,7 @@ upf_context_t *upf_self(void)
 
 static int upf_context_prepare(void)
 {
+    self.hairpin_enabled = true;
     return OGS_OK;
 }
 
@@ -159,6 +160,9 @@ int upf_context_parse_config(void)
                     /* handle config in pfcp library */
                 } else if (!strcmp(upf_key, "metrics")) {
                     /* handle config in metrics library */
+                } else if (!strcmp(upf_key, "hairpin")) {
+                    self.hairpin_enabled =
+                        ogs_yaml_iter_bool(&upf_iter);
                 } else
                     ogs_warn("unknown key `%s`", upf_key);
             }
