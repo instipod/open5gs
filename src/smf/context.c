@@ -20,6 +20,7 @@
 #include "context.h"
 #include "gtp-path.h"
 #include "pfcp-path.h"
+#include "webhook.h"
 
 static smf_context_t self;
 static ogs_diam_config_t g_diam_conf;
@@ -76,6 +77,13 @@ void smf_context_init(void)
     memset(&self, 0, sizeof(smf_context_t));
     smf_ctf_config_init(&self.ctf_config);
     self.diam_config = &g_diam_conf;
+
+    /* Initialize webhook defaults */
+    self.webhook.url = NULL;
+    self.webhook.auth_header = NULL;
+    self.webhook.enabled = 0;
+    self.webhook.timeout_ms = 5000;      /* 5 second default */
+    self.webhook.verify_ssl = true;
 
     ogs_log_install_domain(&__ogs_ngap_domain, "ngap", ogs_core()->log.level);
     ogs_log_install_domain(&__ogs_nas_domain, "nas", ogs_core()->log.level);
@@ -291,6 +299,21 @@ static int smf_context_validation(void)
         if (!self.security_indication.
                 maximum_integrity_protected_data_rate_uplink) {
             ogs_error("No maximum_integrity_protected_data_rate_uplink");
+            return OGS_ERROR;
+        }
+    }
+
+    /* Validate webhook configuration */
+    if (self.webhook.enabled && !self.webhook.url) {
+        ogs_error("Webhook enabled but no URL configured");
+        return OGS_ERROR;
+    }
+
+    if (self.webhook.url && strlen(self.webhook.url) > 0) {
+        if (strncmp(self.webhook.url, "http://", 7) != 0 &&
+            strncmp(self.webhook.url, "https://", 8) != 0) {
+            ogs_error("Invalid webhook URL (must start with http:// or https://): %s",
+                      self.webhook.url);
             return OGS_ERROR;
         }
     }
@@ -550,6 +573,32 @@ int smf_context_parse_config(void)
                             YAML_SCALAR_NODE);
                     self.mtu = atoi(ogs_yaml_iter_value(&smf_iter));
                     ogs_assert(self.mtu);
+                } else if (!strcmp(smf_key, "webhook")) {
+                    ogs_yaml_iter_t webhook_iter;
+                    ogs_yaml_iter_recurse(&smf_iter, &webhook_iter);
+
+                    while (ogs_yaml_iter_next(&webhook_iter)) {
+                        const char *webhook_key = ogs_yaml_iter_key(&webhook_iter);
+                        ogs_assert(webhook_key);
+
+                        if (!strcmp(webhook_key, "url")) {
+                            self.webhook.url = ogs_yaml_iter_value(&webhook_iter);
+                            if (self.webhook.url && strlen(self.webhook.url) > 0) {
+                                self.webhook.enabled = 1;
+                            }
+                        } else if (!strcmp(webhook_key, "enabled")) {
+                            self.webhook.enabled = ogs_yaml_iter_bool(&webhook_iter);
+                        } else if (!strcmp(webhook_key, "timeout")) {
+                            const char *v = ogs_yaml_iter_value(&webhook_iter);
+                            if (v) self.webhook.timeout_ms = atoi(v);
+                        } else if (!strcmp(webhook_key, "verify_ssl")) {
+                            self.webhook.verify_ssl = ogs_yaml_iter_bool(&webhook_iter);
+                        } else if (!strcmp(webhook_key, "auth_header")) {
+                            self.webhook.auth_header = ogs_yaml_iter_value(&webhook_iter);
+                        } else {
+                            ogs_warn("unknown webhook key `%s`", webhook_key);
+                        }
+                    }
                 } else if (!strcmp(smf_key, "p-cscf")) {
                     ogs_yaml_iter_t p_cscf_iter;
                     ogs_yaml_iter_recurse(&smf_iter, &p_cscf_iter);
@@ -1759,6 +1808,11 @@ uint8_t smf_sess_set_ue_ip(smf_sess_t *sess)
         ogs_assert_if_reached();
     }
 
+    /* Send webhook notification after successful IP assignment */
+    if (cause_value == OGS_PFCP_CAUSE_REQUEST_ACCEPTED) {
+        smf_webhook_send_ip_assigned(sess);
+    }
+
     return cause_value;
 }
 
@@ -1826,6 +1880,9 @@ void smf_sess_remove(smf_sess_t *sess)
 
     ogs_hash_set(self.smf_n4_seid_hash, &sess->smf_n4_seid,
             sizeof(sess->smf_n4_seid), NULL);
+
+    /* Send webhook notification BEFORE deallocating IPs */
+    smf_webhook_send_ip_deallocated(sess);
 
     if (sess->ipv4) {
         ogs_hash_set(self.ipv4_hash, sess->ipv4->addr, OGS_IPV4_LEN, NULL);
