@@ -298,8 +298,10 @@ static int smf_context_validation(void)
         }
     }
 
-    rv = ogs_webhook_config_validate(&self.webhook);
-    if (rv != OGS_OK) return rv;
+    {
+        int rv = ogs_webhook_config_validate(&self.webhook);
+        if (rv != OGS_OK) return rv;
+    }
 
     return OGS_OK;
 }
