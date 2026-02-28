@@ -68,7 +68,7 @@ static char *build_webhook_payload(smf_sess_t *sess)
     }
 
     /* Add IMSI */
-    if (smf_ue->imsi_bcd && smf_ue->imsi_bcd[0]) {
+    if (smf_ue->imsi_bcd[0]) {
         cJSON_AddStringToObject(root, "imsi", smf_ue->imsi_bcd);
     }
 
@@ -145,13 +145,13 @@ void smf_webhook_send_ip_assigned(smf_sess_t *sess)
     if (!payload) {
         ogs_error("Failed to build webhook payload for UE [%s]",
                   smf_ue->supi ? smf_ue->supi :
-                  (smf_ue->imsi_bcd ? smf_ue->imsi_bcd : "unknown"));
+                  (smf_ue->imsi_bcd[0] ? smf_ue->imsi_bcd : "unknown"));
         return;
     }
 
     ogs_webhook_send(&smf_ctx->webhook, payload,
             smf_ue->supi ? smf_ue->supi :
-            (smf_ue->imsi_bcd ? smf_ue->imsi_bcd : "unknown"));
+            (smf_ue->imsi_bcd[0] ? smf_ue->imsi_bcd : "unknown"));
 
     cJSON_free(payload);
 }
@@ -202,7 +202,7 @@ static char *build_webhook_deallocation_payload(smf_sess_t *sess)
     }
 
     /* Add IMSI */
-    if (smf_ue->imsi_bcd && smf_ue->imsi_bcd[0]) {
+    if (smf_ue->imsi_bcd[0]) {
         cJSON_AddStringToObject(root, "imsi", smf_ue->imsi_bcd);
     }
 
@@ -285,13 +285,13 @@ void smf_webhook_send_ip_deallocated(smf_sess_t *sess)
     if (!payload) {
         ogs_error("Failed to build webhook deallocation payload for UE [%s]",
                   smf_ue->supi ? smf_ue->supi :
-                  (smf_ue->imsi_bcd ? smf_ue->imsi_bcd : "unknown"));
+                  (smf_ue->imsi_bcd[0] ? smf_ue->imsi_bcd : "unknown"));
         return;
     }
 
     ogs_webhook_send(&smf_ctx->webhook, payload,
             smf_ue->supi ? smf_ue->supi :
-            (smf_ue->imsi_bcd ? smf_ue->imsi_bcd : "unknown"));
+            (smf_ue->imsi_bcd[0] ? smf_ue->imsi_bcd : "unknown"));
 
     cJSON_free(payload);
 }
