@@ -20,7 +20,7 @@
 #ifndef OGS_WEBHOOK_H
 #define OGS_WEBHOOK_H
 
-#include "app/ogs-yaml.h"
+#include "app/ogs-app.h"
 
 #ifdef __cplusplus
 extern "C" {
