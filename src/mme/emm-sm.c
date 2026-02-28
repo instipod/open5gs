@@ -33,6 +33,7 @@
 #include "mme-gtp-path.h"
 #include "mme-path.h"
 #include "mme-sm.h"
+#include "mme-webhook.h"
 
 #undef OGS_LOG_DOMAIN
 #define OGS_LOG_DOMAIN __emm_log_domain
@@ -283,6 +284,7 @@ void emm_state_registered(ogs_fsm_t *s, mme_event_t *e)
              * the network, the network shall implicitly detach the UE.
              */
             mme_ue->detach_type = MME_DETACH_TYPE_MME_IMPLICIT;
+            mme_webhook_send_ue_detached(mme_ue);
             if (MME_CURRENT_P_TMSI_IS_AVAILABLE(mme_ue)) {
                 ogs_assert(OGS_OK == sgsap_send_detach_indication(mme_ue));
             } else {
@@ -1658,6 +1660,7 @@ void emm_state_initial_context_setup(ogs_fsm_t *s, mme_event_t *e)
                     sgsap_send_tmsi_reallocation_complete(mme_ue));
             }
 
+            mme_webhook_send_ue_attached(mme_ue);
             OGS_FSM_TRAN(s, &emm_state_registered);
             break;
 
@@ -1775,6 +1778,8 @@ void emm_state_initial_context_setup(ogs_fsm_t *s, mme_event_t *e)
                 OGS_FSM_TRAN(s, &emm_state_exception);
                 break;
             }
+
+            mme_webhook_send_ue_detached(mme_ue);
 
             /*
              * If the OLD ENB_UE is being maintained in MME-UE Context,

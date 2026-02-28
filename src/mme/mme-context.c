@@ -26,6 +26,7 @@
 #include "s1ap-path.h"
 #include "s1ap-handler.h"
 #include "mme-sm.h"
+#include "mme-webhook.h"
 #include "mme-gtp-path.h"
 
 #define MAX_CELL_PER_ENB            8
@@ -81,6 +82,8 @@ void mme_context_init(void)
     /* Initialize MME context */
     memset(&self, 0, sizeof(mme_context_t));
     self.diam_config = &g_diam_conf;
+
+    ogs_webhook_config_init(&self.webhook);
 
     ogs_log_install_domain(&__ogs_sctp_domain, "sctp", ogs_core()->log.level);
     ogs_log_install_domain(&__ogs_s1ap_domain, "s1ap", ogs_core()->log.level);
@@ -223,6 +226,7 @@ static int mme_context_prepare(void)
 
 static int mme_context_validation(void)
 {
+    int rv;
     ogs_nas_gprs_timer_t gprs_timer;
 
     if (self.diam_conf_path == NULL &&
@@ -317,6 +321,9 @@ static int mme_context_validation(void)
         ogs_error("Not support GPRS Timer [%d]", (int)self.time.t3423.value);
         return OGS_ERROR;
     }
+
+    rv = ogs_webhook_config_validate(&self.webhook);
+    if (rv != OGS_OK) return rv;
 
     return OGS_OK;
 }
@@ -2626,6 +2633,9 @@ int mme_context_parse_config(void)
                         } else
                             ogs_warn("unknown key `%s`", emerg_key);
                     }
+                } else if (!strcmp(mme_key, "webhook")) {
+                    ogs_webhook_config_parse_yaml(
+                            &self.webhook, &mme_iter);
                 } else
                     ogs_warn("unknown key `%s`", mme_key);
             }
@@ -3140,6 +3150,9 @@ int mme_enb_remove(mme_enb_t *enb)
 
     ogs_assert(enb);
     ogs_assert(enb->sctp.sock);
+
+    if (enb->state.s1_setup_success)
+        mme_webhook_send_enb_detached(enb);
 
     ogs_list_remove(&self.enb_list, enb);
 

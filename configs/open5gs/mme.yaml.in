@@ -43,6 +43,12 @@ mme:
     full: Open5GS
     short: Next
   mme_name: open5gs-mme0
+#  webhook:
+#    url: http://localhost:8080/webhook/mme-events
+#    enabled: true
+#    auth_header: "Bearer your-api-token-here"
+#    timeout: 5000
+#    verify_ssl: true
   time:
 #    t3402:
 #      value: 720   # 12 minutes * 60 = 720 seconds

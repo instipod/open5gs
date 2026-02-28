@@ -30,6 +30,7 @@
 #include "ogs-pfcp.h"
 #include "ogs-sbi.h"
 #include "ogs-app.h"
+#include "webhook/ogs-webhook.h"
 #include "ogs-ngap.h"
 #include "ogs-nas-5gs.h"
 #include "ipfw/ogs-ipfw.h"
@@ -155,14 +156,7 @@ typedef struct smf_context_s {
         const char *maximum_integrity_protected_data_rate_downlink;
     } security_indication;
 
-    /* Webhook notification for IP assignment events */
-    struct {
-        char *url;              /* Webhook endpoint URL */
-        char *auth_header;      /* Optional Authorization header value */
-        int enabled;            /* 0 = disabled, 1 = enabled */
-        int timeout_ms;         /* HTTP request timeout in milliseconds */
-        bool verify_ssl;        /* SSL/TLS certificate verification */
-    } webhook;
+    ogs_webhook_config_t webhook;
 
 #define SMF_UE_IS_LAST_SESSION(__sMF) \
      ((__sMF) && (ogs_list_count(&(__sMF)->sess_list)) == 1)

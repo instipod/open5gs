@@ -33,6 +33,7 @@
 
 #include "mme-path.h"
 #include "mme-sm.h"
+#include "mme-webhook.h"
 
 static bool maximum_number_of_enbs_is_reached(void)
 {
@@ -298,6 +299,8 @@ void s1ap_handle_s1_setup_request(mme_enb_t *enb, ogs_s1ap_message_t *message)
     r = s1ap_send_s1_setup_response(enb);
     ogs_expect(r == OGS_OK);
     ogs_assert(r != OGS_ERROR);
+
+    mme_webhook_send_enb_attached(enb);
 }
 
 void s1ap_handle_enb_configuration_update(

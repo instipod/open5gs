@@ -15,23 +15,23 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-libinc = include_directories('.')
+libwebhook_sources = files('''
+    ogs-webhook.h
+    ogs-webhook.c
+'''.split())
 
-subdir('core')
-subdir('proto')
-subdir('dbi')
-subdir('crypt')
-subdir('ipfw')
-subdir('tun')
-subdir('app')
-subdir('webhook')
-subdir('metrics')
-subdir('sctp')
-subdir('diameter')
-subdir('asn1c')
-subdir('ngap')
-subdir('s1ap')
-subdir('nas')
-subdir('gtp')
-subdir('pfcp')
-subdir('sbi')
+libwebhook_inc = include_directories('.')
+
+libcurl_dep = dependency('libcurl', version: '>=7.52.1')
+
+libwebhook = library('ogswebhook',
+    sources : libwebhook_sources,
+    version : libogslib_version,
+    include_directories : [libwebhook_inc, libinc],
+    dependencies : [libapp_dep, libcurl_dep],
+    install : true)
+
+libwebhook_dep = declare_dependency(
+    link_with : libwebhook,
+    include_directories : [libwebhook_inc, libinc],
+    dependencies : [libapp_dep, libcurl_dep])

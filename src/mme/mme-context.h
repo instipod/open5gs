@@ -28,6 +28,7 @@
 #include "ogs-nas-eps.h"
 #include "ogs-app.h"
 #include "ogs-sctp.h"
+#include "webhook/ogs-webhook.h"
 #include "metrics.h"
 
 /* S1AP */
@@ -159,6 +160,8 @@ typedef struct mme_context_s {
 
     ogs_hash_t *mme_s11_teid_hash;  /* hash table (MME-S11-TEID : MME_UE) */
     ogs_hash_t *mme_gn_teid_hash;  /* hash table (MME-GN-TEID : MME_UE) */
+
+    ogs_webhook_config_t webhook;
 
     struct {
         struct {

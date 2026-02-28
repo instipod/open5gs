@@ -78,12 +78,7 @@ void smf_context_init(void)
     smf_ctf_config_init(&self.ctf_config);
     self.diam_config = &g_diam_conf;
 
-    /* Initialize webhook defaults */
-    self.webhook.url = NULL;
-    self.webhook.auth_header = NULL;
-    self.webhook.enabled = 0;
-    self.webhook.timeout_ms = 5000;      /* 5 second default */
-    self.webhook.verify_ssl = true;
+    ogs_webhook_config_init(&self.webhook);
 
     ogs_log_install_domain(&__ogs_ngap_domain, "ngap", ogs_core()->log.level);
     ogs_log_install_domain(&__ogs_nas_domain, "nas", ogs_core()->log.level);
@@ -303,20 +298,8 @@ static int smf_context_validation(void)
         }
     }
 
-    /* Validate webhook configuration */
-    if (self.webhook.enabled && !self.webhook.url) {
-        ogs_error("Webhook enabled but no URL configured");
-        return OGS_ERROR;
-    }
-
-    if (self.webhook.url && strlen(self.webhook.url) > 0) {
-        if (strncmp(self.webhook.url, "http://", 7) != 0 &&
-            strncmp(self.webhook.url, "https://", 8) != 0) {
-            ogs_error("Invalid webhook URL (must start with http:// or https://): %s",
-                      self.webhook.url);
-            return OGS_ERROR;
-        }
-    }
+    rv = ogs_webhook_config_validate(&self.webhook);
+    if (rv != OGS_OK) return rv;
 
     return OGS_OK;
 }
@@ -574,31 +557,8 @@ int smf_context_parse_config(void)
                     self.mtu = atoi(ogs_yaml_iter_value(&smf_iter));
                     ogs_assert(self.mtu);
                 } else if (!strcmp(smf_key, "webhook")) {
-                    ogs_yaml_iter_t webhook_iter;
-                    ogs_yaml_iter_recurse(&smf_iter, &webhook_iter);
-
-                    while (ogs_yaml_iter_next(&webhook_iter)) {
-                        const char *webhook_key = ogs_yaml_iter_key(&webhook_iter);
-                        ogs_assert(webhook_key);
-
-                        if (!strcmp(webhook_key, "url")) {
-                            self.webhook.url = ogs_yaml_iter_value(&webhook_iter);
-                            if (self.webhook.url && strlen(self.webhook.url) > 0) {
-                                self.webhook.enabled = 1;
-                            }
-                        } else if (!strcmp(webhook_key, "enabled")) {
-                            self.webhook.enabled = ogs_yaml_iter_bool(&webhook_iter);
-                        } else if (!strcmp(webhook_key, "timeout")) {
-                            const char *v = ogs_yaml_iter_value(&webhook_iter);
-                            if (v) self.webhook.timeout_ms = atoi(v);
-                        } else if (!strcmp(webhook_key, "verify_ssl")) {
-                            self.webhook.verify_ssl = ogs_yaml_iter_bool(&webhook_iter);
-                        } else if (!strcmp(webhook_key, "auth_header")) {
-                            self.webhook.auth_header = ogs_yaml_iter_value(&webhook_iter);
-                        } else {
-                            ogs_warn("unknown webhook key `%s`", webhook_key);
-                        }
-                    }
+                    ogs_webhook_config_parse_yaml(
+                            &self.webhook, &smf_iter);
                 } else if (!strcmp(smf_key, "p-cscf")) {
                     ogs_yaml_iter_t p_cscf_iter;
                     ogs_yaml_iter_recurse(&smf_iter, &p_cscf_iter);

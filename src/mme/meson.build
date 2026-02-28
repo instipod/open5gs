@@ -43,6 +43,7 @@ libmme_sources = files('''
     sbc-handler.h
     mme-sm.h
     mme-path.h
+    mme-webhook.h
     metrics.h
 
     mme-init.c
@@ -79,6 +80,7 @@ libmme_sources = files('''
     mme-path.c
     sbc-handler.c
     metrics.c
+    mme-webhook.c
     enb-info.c
     ue-info.c
     ../../lib/metrics/prometheus/json_pager.c
@@ -92,7 +94,8 @@ libmme = static_library('mme',
                     libnas_eps_dep,
                     libdiameter_s6a_dep,
                     libgtp_dep,
-                    libsbi_dep],
+                    libsbi_dep,
+                    libwebhook_dep],
     install : false)
 
 libmme_dep = declare_dependency(
@@ -103,7 +106,8 @@ libmme_dep = declare_dependency(
                     libnas_eps_dep,
                     libdiameter_s6a_dep,
                     libsbi_dep,
-                    libgtp_dep])
+                    libgtp_dep,
+                    libwebhook_dep])
 
 mme_sources = files('''
     app-init.c
