@@ -120,6 +120,20 @@ typedef struct smf_nsmf_pdusession_param_s {
 
 } smf_nsmf_pdusession_param_t;
 
+/*
+ * Per-DNN DHCP configuration.  One entry per DNN that should use an external
+ * DHCP server for UE IPv4 address assignment instead of the static pool.
+ */
+typedef struct smf_dhcp_config_s {
+    ogs_lnode_t lnode;
+    char       *dnn;            /* DNN this entry applies to */
+    const char *server_addr;    /* DHCP server IPv4 address string */
+    uint16_t    server_port;    /* DHCP server UDP port (default 67) */
+    int         timeout_ms;     /* Per-attempt recv timeout in ms (default 3000) */
+    int         max_retries;    /* DISCOVER/REQUEST retry count (default 3) */
+    uint8_t     mac_prefix[3];  /* OUI prefix for dummy MAC (default 02:00:00) */
+} smf_dhcp_config_t;
+
 typedef struct smf_context_s {
     smf_ctf_config_t    ctf_config;
     const char*         diam_conf_path;   /* SMF Diameter conf path */
@@ -157,6 +171,8 @@ typedef struct smf_context_s {
     } security_indication;
 
     ogs_webhook_config_t webhook;
+
+    ogs_list_t      dhcp_list;  /* list of smf_dhcp_config_t, one per DNN */
 
 #define SMF_UE_IS_LAST_SESSION(__sMF) \
      ((__sMF) && (ogs_list_count(&(__sMF)->sess_list)) == 1)
@@ -564,6 +580,7 @@ typedef struct smf_sess_s {
 
     ogs_pfcp_ue_ip_t *ipv4;
     ogs_pfcp_ue_ip_t *ipv6;
+    bool dhcp_assigned; /* true if ipv4 was obtained via external DHCP */
 
     /* AN Type */
     OpenAPI_access_type_e an_type;

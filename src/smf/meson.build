@@ -72,6 +72,7 @@ libsmf_sources = files('''
     metrics.h
     pdu-info.h
     webhook.h
+    dhcp-client.h
 
     init.c
     event.c
@@ -116,6 +117,7 @@ libsmf_sources = files('''
     metrics.c
     pdu-info.c
     webhook.c
+    dhcp-client.c
     ../../lib/metrics/prometheus/json_pager.c
 '''.split())
 

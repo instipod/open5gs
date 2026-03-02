@@ -21,6 +21,7 @@
 #include "gtp-path.h"
 #include "pfcp-path.h"
 #include "webhook.h"
+#include "dhcp-client.h"
 
 static smf_context_t self;
 static ogs_diam_config_t g_diam_conf;
@@ -561,6 +562,94 @@ int smf_context_parse_config(void)
                 } else if (!strcmp(smf_key, "webhook")) {
                     ogs_webhook_config_parse_yaml(
                             &self.webhook, &smf_iter);
+                } else if (!strcmp(smf_key, "dhcp")) {
+                    ogs_yaml_iter_t dhcp_array, dhcp_iter;
+                    ogs_yaml_iter_recurse(&smf_iter, &dhcp_array);
+                    do {
+                        smf_dhcp_config_t *dhcp_cfg = NULL;
+                        const char *dnn = NULL;
+                        const char *server = NULL;
+                        const char *mac_prefix_str = NULL;
+                        uint16_t port = 67;
+                        int timeout_ms = 3000, retries = 3;
+
+                        if (ogs_yaml_iter_type(&dhcp_array) ==
+                                YAML_SEQUENCE_NODE) {
+                            if (!ogs_yaml_iter_next(&dhcp_array))
+                                break;
+                            ogs_yaml_iter_recurse(&dhcp_array, &dhcp_iter);
+                        } else if (ogs_yaml_iter_type(&dhcp_array) ==
+                                YAML_MAPPING_NODE) {
+                            memcpy(&dhcp_iter, &dhcp_array,
+                                    sizeof(dhcp_iter));
+                        } else
+                            break;
+
+                        while (ogs_yaml_iter_next(&dhcp_iter)) {
+                            const char *k = ogs_yaml_iter_key(&dhcp_iter);
+                            ogs_assert(k);
+                            if (!strcmp(k, "dnn")) {
+                                dnn = ogs_yaml_iter_value(&dhcp_iter);
+                            } else if (!strcmp(k, "server")) {
+                                server = ogs_yaml_iter_value(&dhcp_iter);
+                            } else if (!strcmp(k, "port")) {
+                                const char *v =
+                                    ogs_yaml_iter_value(&dhcp_iter);
+                                if (v) port = (uint16_t)atoi(v);
+                            } else if (!strcmp(k, "timeout")) {
+                                const char *v =
+                                    ogs_yaml_iter_value(&dhcp_iter);
+                                if (v) timeout_ms = atoi(v);
+                            } else if (!strcmp(k, "retries")) {
+                                const char *v =
+                                    ogs_yaml_iter_value(&dhcp_iter);
+                                if (v) retries = atoi(v);
+                            } else if (!strcmp(k, "mac_prefix")) {
+                                mac_prefix_str =
+                                    ogs_yaml_iter_value(&dhcp_iter);
+                            } else {
+                                ogs_warn("unknown dhcp key `%s`", k);
+                            }
+                        }
+
+                        if (dnn && server) {
+                            dhcp_cfg = ogs_calloc(1, sizeof(*dhcp_cfg));
+                            ogs_assert(dhcp_cfg);
+                            dhcp_cfg->dnn = ogs_strdup(dnn);
+                            dhcp_cfg->server_addr = server;
+                            dhcp_cfg->server_port = port;
+                            dhcp_cfg->timeout_ms  = timeout_ms;
+                            dhcp_cfg->max_retries = retries;
+                            /* Default locally administered unicast OUI */
+                            dhcp_cfg->mac_prefix[0] = 0x02;
+                            dhcp_cfg->mac_prefix[1] = 0x00;
+                            dhcp_cfg->mac_prefix[2] = 0x00;
+                            if (mac_prefix_str) {
+                                unsigned int b0 = 0, b1 = 0, b2 = 0;
+                                if (sscanf(mac_prefix_str,
+                                           "%x:%x:%x", &b0, &b1, &b2) == 3 ||
+                                    sscanf(mac_prefix_str,
+                                           "%2x%2x%2x", &b0, &b1, &b2) == 3) {
+                                    dhcp_cfg->mac_prefix[0] = (uint8_t)b0;
+                                    dhcp_cfg->mac_prefix[1] = (uint8_t)b1;
+                                    dhcp_cfg->mac_prefix[2] = (uint8_t)b2;
+                                    if (!(b0 & 0x02))
+                                        ogs_warn("DHCP mac_prefix '%s' does "
+                                            "not have locally-administered "
+                                            "bit set", mac_prefix_str);
+                                } else {
+                                    ogs_warn("Invalid mac_prefix '%s', "
+                                             "using default 02:00:00",
+                                             mac_prefix_str);
+                                }
+                            }
+                            ogs_list_add(&self.dhcp_list, dhcp_cfg);
+                        } else if (dnn || server) {
+                            ogs_warn("dhcp entry missing 'dnn' or 'server',"
+                                     " skipping");
+                        }
+                    } while (ogs_yaml_iter_type(&dhcp_array) ==
+                            YAML_SEQUENCE_NODE);
                 } else if (!strcmp(smf_key, "p-cscf")) {
                     ogs_yaml_iter_t p_cscf_iter;
                     ogs_yaml_iter_recurse(&smf_iter, &p_cscf_iter);
@@ -1701,11 +1790,44 @@ uint8_t smf_sess_set_ue_ip(smf_sess_t *sess)
         ogs_hash_set(smf_self()->ipv4_hash,
                 sess->ipv4->addr, OGS_IPV4_LEN, NULL);
         ogs_pfcp_ue_ip_free(sess->ipv4);
+        sess->ipv4 = NULL;
+        sess->dhcp_assigned = false;
     }
     if (sess->ipv6) {
         ogs_hash_set(smf_self()->ipv6_hash,
                 sess->ipv6->addr, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, NULL);
         ogs_pfcp_ue_ip_free(sess->ipv6);
+        sess->ipv6 = NULL;
+    }
+
+    /*
+     * Per-DNN external DHCP assignment (IPv4 only; IPv6 always uses pool).
+     * If a dhcp: entry is configured for this DNN, contact the external DHCP
+     * server to obtain the UE's IPv4 address.  On failure the session is
+     * rejected — there is no fallback to the static pool.
+     */
+    if (sess->session.name &&
+        (sess->session.session_type == OGS_PDU_SESSION_TYPE_IPV4 ||
+         sess->session.session_type == OGS_PDU_SESSION_TYPE_IPV4V6)) {
+        smf_dhcp_config_t *dhcp_cfg =
+                smf_dhcp_find_config_by_dnn(sess->session.name);
+        if (dhcp_cfg) {
+            uint32_t dhcp_ip = 0;
+            if (smf_dhcp_acquire(sess, dhcp_cfg, &dhcp_ip) != OGS_OK ||
+                    !dhcp_ip) {
+                ogs_error("[%s] DHCP IP acquisition failed",
+                        sess->session.name);
+                return OGS_PFCP_CAUSE_NO_RESOURCES_AVAILABLE;
+            }
+            /*
+             * Store the DHCP-assigned IP as the static-address hint.
+             * ogs_pfcp_ue_ip_alloc() will see a non-zero addr and
+             * heap-allocate an ogs_pfcp_ue_ip_t with static_ip=true,
+             * bypassing the pool entirely.
+             */
+            sess->session.ue_ip.addr = dhcp_ip;
+            sess->dhcp_assigned = true;
+        }
     }
 
     if (sess->session.session_type == OGS_PDU_SESSION_TYPE_IPV4) {
@@ -1845,6 +1967,10 @@ void smf_sess_remove(smf_sess_t *sess)
 
     /* Send webhook notification BEFORE deallocating IPs */
     smf_webhook_send_ip_deallocated(sess);
+
+    /* Release DHCP lease if this IPv4 address was obtained via external DHCP */
+    if (sess->dhcp_assigned && sess->ipv4)
+        smf_dhcp_release(sess);
 
     if (sess->ipv4) {
         ogs_hash_set(self.ipv4_hash, sess->ipv4->addr, OGS_IPV4_LEN, NULL);
