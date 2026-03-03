@@ -44,6 +44,9 @@ typedef struct ogs_metrics_context_s {
 
     /* custom endpoints */
     ogs_list_t custom_eps;
+
+    /* action endpoints */
+    ogs_list_t action_eps;
 } ogs_metrics_context_t;
 
 typedef enum ogs_metrics_histogram_bucket_type_s  {
@@ -129,6 +132,26 @@ typedef struct ogs_metrics_custom_ep_s {
 
 void ogs_metrics_register_custom_ep(ogs_metrics_custom_ep_hdlr_t handler,
         const char *endpoint);
+
+
+/* Action endpoint: handler receives the raw MHD connection as void* so it can
+   read arbitrary query parameters via ogs_metrics_get_query_param(). */
+typedef size_t (*ogs_metrics_action_ep_hdlr_t)(void *conn, char *buf, size_t buflen);
+
+typedef struct ogs_metrics_action_ep_s {
+    ogs_lnode_t lnode;
+
+    char *endpoint;
+    ogs_metrics_action_ep_hdlr_t handler;
+} ogs_metrics_action_ep_t;
+
+void ogs_metrics_register_action_ep(ogs_metrics_action_ep_hdlr_t handler,
+        const char *endpoint);
+
+/* Extract a query parameter value from the opaque MHD connection.
+   Returns NULL if the key is absent. The returned pointer is valid for
+   the duration of the request. */
+const char *ogs_metrics_get_query_param(void *conn, const char *key);
 
 #ifdef __cplusplus
 }

@@ -42,6 +42,7 @@ void ogs_metrics_context_init(void)
     ogs_metrics_server_init(ogs_metrics_self());
 
     ogs_list_init(&self.custom_eps);
+    ogs_list_init(&self.action_eps);
 
     context_initialized = 1;
 }
@@ -60,6 +61,15 @@ void ogs_metrics_context_close(ogs_metrics_context_t *ctx)
         if (node->endpoint) ogs_free(node->endpoint);
         ogs_list_remove(&self.custom_eps, node);
         ogs_free(node);
+    }
+
+    {
+        ogs_metrics_action_ep_t *anode = NULL, *anode_next = NULL;
+        ogs_list_for_each_safe(&self.action_eps, anode_next, anode) {
+            if (anode->endpoint) ogs_free(anode->endpoint);
+            ogs_list_remove(&self.action_eps, anode);
+            ogs_free(anode);
+        }
     }
 }
 
@@ -290,4 +300,18 @@ void ogs_metrics_register_custom_ep(ogs_metrics_custom_ep_hdlr_t handler,
     ep->handler = handler;
 
     ogs_list_add(&self.custom_eps, ep);
+}
+
+void ogs_metrics_register_action_ep(ogs_metrics_action_ep_hdlr_t handler,
+        const char *endpoint)
+{
+    ogs_metrics_action_ep_t *ep;
+
+    ep = ogs_calloc(1, sizeof(*ep));
+    ogs_assert(ep);
+
+    ep->endpoint = ogs_strdup(endpoint);
+    ep->handler = handler;
+
+    ogs_list_add(&self.action_eps, ep);
 }

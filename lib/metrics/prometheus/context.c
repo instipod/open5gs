@@ -88,6 +88,31 @@ static size_t get_query_size_t(struct MHD_Connection *connection,
     return (size_t)v;
 }
 
+const char *ogs_metrics_get_query_param(void *conn, const char *key)
+{
+    return MHD_lookup_connection_value(
+            (struct MHD_Connection *)conn, MHD_GET_ARGUMENT_KIND, key);
+}
+
+static _MHD_Result serve_action(struct MHD_Connection *connection,
+        ogs_metrics_action_ep_hdlr_t handler)
+{
+    char buf[4096];
+    struct MHD_Response *rsp = NULL;
+    int ret = MHD_NO;
+
+    size_t len = handler(connection, buf, sizeof(buf));
+    const char *body = len ? buf : "{\"status\":\"error\"}";
+    size_t body_len = len ? len : strlen(body);
+
+    rsp = MHD_create_response_from_buffer(body_len, (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(rsp, "Content-Type", "application/json");
+    MHD_add_response_header(rsp, "Access-Control-Allow-Origin", "*");
+    ret = MHD_queue_response(connection, MHD_HTTP_OK, rsp);
+    MHD_destroy_response(rsp);
+    return (_MHD_Result)ret;
+}
+
 void ogs_metrics_server_init(ogs_metrics_context_t *ctx)
 {
     ogs_list_init(&ctx->server_list);
@@ -308,6 +333,13 @@ mhd_server_access_handler(void *cls, struct MHD_Connection *connection,
             return serve_json_from_dumper(connection,
                     node->handler,
                     page, page_size);
+        }
+    }
+
+    ogs_metrics_action_ep_t *anode = NULL;
+    ogs_list_for_each(&ogs_metrics_self()->action_eps, anode) {
+        if (!strcmp(anode->endpoint, url)) {
+            return serve_action(connection, anode->handler);
         }
     }
 
