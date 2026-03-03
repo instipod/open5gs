@@ -94,25 +94,6 @@ const char *ogs_metrics_get_query_param(void *conn, const char *key)
             (struct MHD_Connection *)conn, MHD_GET_ARGUMENT_KIND, key);
 }
 
-static _MHD_Result serve_action(struct MHD_Connection *connection,
-        ogs_metrics_action_ep_hdlr_t handler)
-{
-    char buf[4096];
-    struct MHD_Response *rsp = NULL;
-    int ret = MHD_NO;
-
-    size_t len = handler(connection, buf, sizeof(buf));
-    const char *body = len ? buf : "{\"status\":\"error\"}";
-    size_t body_len = len ? len : strlen(body);
-
-    rsp = MHD_create_response_from_buffer(body_len, (void *)body, MHD_RESPMEM_MUST_COPY);
-    MHD_add_response_header(rsp, "Content-Type", "application/json");
-    MHD_add_response_header(rsp, "Access-Control-Allow-Origin", "*");
-    ret = MHD_queue_response(connection, MHD_HTTP_OK, rsp);
-    MHD_destroy_response(rsp);
-    return (_MHD_Result)ret;
-}
-
 void ogs_metrics_server_init(ogs_metrics_context_t *ctx)
 {
     ogs_list_init(&ctx->server_list);
@@ -281,6 +262,25 @@ static _MHD_Result serve_json_from_dumper(struct MHD_Connection *connection,
 #if MHD_VERSION < 0x00096100
     ogs_free(bufjson);
 #endif
+    return (_MHD_Result)ret;
+}
+
+static _MHD_Result serve_action(struct MHD_Connection *connection,
+        ogs_metrics_action_ep_hdlr_t handler)
+{
+    char buf[4096];
+    struct MHD_Response *rsp = NULL;
+    int ret = MHD_NO;
+
+    size_t len = handler(connection, buf, sizeof(buf));
+    const char *body = len ? buf : "{\"status\":\"error\"}";
+    size_t body_len = len ? len : strlen(body);
+
+    rsp = MHD_create_response_from_buffer(body_len, (void *)body, MHD_RESPMEM_MUST_COPY);
+    MHD_add_response_header(rsp, "Content-Type", "application/json");
+    MHD_add_response_header(rsp, "Access-Control-Allow-Origin", "*");
+    ret = MHD_queue_response(connection, MHD_HTTP_OK, rsp);
+    MHD_destroy_response(rsp);
     return (_MHD_Result)ret;
 }
 
