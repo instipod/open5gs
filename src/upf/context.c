@@ -109,6 +109,7 @@ upf_context_t *upf_self(void)
 
 static int upf_context_prepare(void)
 {
+    self.ue_to_ue_hairpin = true;
     return OGS_OK;
 }
 
@@ -159,6 +160,17 @@ int upf_context_parse_config(void)
                     /* handle config in pfcp library */
                 } else if (!strcmp(upf_key, "metrics")) {
                     /* handle config in metrics library */
+                } else if (!strcmp(upf_key, "ue_to_ue_hairpin")) {
+                    const char *v = ogs_yaml_iter_value(&upf_iter);
+                    if (v) {
+                        if (!strcmp(v, "false") || !strcmp(v, "no"))
+                            self.ue_to_ue_hairpin = false;
+                        else if (!strcmp(v, "true") || !strcmp(v, "yes"))
+                            self.ue_to_ue_hairpin = true;
+                        else
+                            ogs_warn("unknown value `%s` for ue_to_ue_hairpin"
+                                     " (use true/false)", v);
+                    }
                 } else
                     ogs_warn("unknown key `%s`", upf_key);
             }

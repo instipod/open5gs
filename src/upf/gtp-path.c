@@ -727,28 +727,33 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
 
             /*
              * If destined to another UE on the same subnet,
-             * hairpin back out.
+             * hairpin back out (when ue_to_ue_hairpin is enabled).
+             *
+             * When disabled, the packet falls through to the TUN interface
+             * and is hairpinned by the Linux kernel or an upstream router.
              *
              * subnet is already resolved from the source UE
              * (sess->ipv4->subnet or sess->ipv6->subnet).
              * A cheap subnet check gates the session lookup so that
              * normal internet traffic does not touch the hash table.
              */
-            if (ip_h->ip_v == 4 && subnet->family == AF_INET) {
-                if (ogs_unlikely(
-                        (ip_h->ip_dst.s_addr & subnet->sub.mask[0]) ==
-                        subnet->sub.sub[0]))
-                    dst_sess = upf_sess_find_by_ipv4(ip_h->ip_dst.s_addr);
-            } else if (ip_h->ip_v == 6 && subnet->family == AF_INET6) {
-                struct ip6_hdr *ip6_h = (struct ip6_hdr *)ip_h;
-                uint32_t *dst6 = (void *)ip6_h->ip6_dst.s6_addr;
+            if (upf_self()->ue_to_ue_hairpin) {
+                if (ip_h->ip_v == 4 && subnet->family == AF_INET) {
+                    if (ogs_unlikely(
+                            (ip_h->ip_dst.s_addr & subnet->sub.mask[0]) ==
+                            subnet->sub.sub[0]))
+                        dst_sess = upf_sess_find_by_ipv4(ip_h->ip_dst.s_addr);
+                } else if (ip_h->ip_v == 6 && subnet->family == AF_INET6) {
+                    struct ip6_hdr *ip6_h = (struct ip6_hdr *)ip_h;
+                    uint32_t *dst6 = (void *)ip6_h->ip6_dst.s6_addr;
 
-                if (ogs_unlikely(
-                    (dst6[0] & subnet->sub.mask[0]) == subnet->sub.sub[0] &&
-                    (dst6[1] & subnet->sub.mask[1]) == subnet->sub.sub[1] &&
-                    (dst6[2] & subnet->sub.mask[2]) == subnet->sub.sub[2] &&
-                    (dst6[3] & subnet->sub.mask[3]) == subnet->sub.sub[3]))
-                    dst_sess = upf_sess_find_by_ipv6(dst6);
+                    if (ogs_unlikely(
+                        (dst6[0] & subnet->sub.mask[0]) == subnet->sub.sub[0] &&
+                        (dst6[1] & subnet->sub.mask[1]) == subnet->sub.sub[1] &&
+                        (dst6[2] & subnet->sub.mask[2]) == subnet->sub.sub[2] &&
+                        (dst6[3] & subnet->sub.mask[3]) == subnet->sub.sub[3]))
+                        dst_sess = upf_sess_find_by_ipv6(dst6);
+                }
             }
 
             if (ogs_unlikely(dst_sess != NULL) && dst_sess != sess) {

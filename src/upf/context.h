@@ -48,6 +48,8 @@ extern int __upf_log_domain;
 struct upf_route_trie_node;
 
 typedef struct upf_context_s {
+    bool        ue_to_ue_hairpin;   /* hairpin UE-to-UE traffic at UPF (default: true) */
+
     ogs_hash_t *upf_n4_seid_hash;   /* hash table (UPF-N4-SEID) */
     ogs_hash_t *smf_n4_seid_hash;   /* hash table (SMF-N4-SEID) */
     ogs_hash_t *smf_n4_f_seid_hash; /* hash table (SMF-N4-F-SEID) */

@@ -9,6 +9,9 @@ global:
 #    peer: 64
 
 upf:
+#  ue_to_ue_hairpin: true  # Hairpin UE-to-UE traffic within the UPF (default: true).
+#                          # Set to false to send the traffic out via the TUN interface
+#                          # and let the Linux kernel or an upstream router hairpin it.
   pfcp:
     server:
       - address: 127.0.0.7
