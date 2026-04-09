@@ -1415,7 +1415,14 @@ void emm_state_security_mode(ogs_fsm_t *s, mme_event_t *e)
                 break;
             }
 
-            mme_s6a_send_ulr(enb_ue, mme_ue, 0);
+            /* If EIR fucntionality is enabled we want
+             * to make sure the UE is valid before sending
+             * the Update Location Request to HSS */
+            if (mme_self()->eir.enabled) {
+                mme_s13_send_ecr(mme_ue);
+            } else {
+                mme_s6a_send_ulr(enb_ue, mme_ue, 0);
+            }
 
             if (MME_NEXT_GUTI_IS_AVAILABLE(mme_ue)) {
                 OGS_FSM_TRAN(s, &emm_state_initial_context_setup);

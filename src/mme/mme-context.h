@@ -24,6 +24,7 @@
 
 #include "ogs-s1ap.h"
 #include "ogs-diameter-s6a.h"
+#include "ogs-diameter-s13.h"
 #include "ogs-gtp.h"
 #include "ogs-nas-eps.h"
 #include "ogs-app.h"
@@ -169,6 +170,9 @@ typedef struct mme_context_s {
     struct {
         const char *dnn;            /* Emergency APN */
     } emergency;
+
+    /* Control EIR functionality */
+    ogs_nas_eir_t eir;
 } mme_context_t;
 
 typedef struct mme_sgsn_route_s {
