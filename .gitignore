@@ -7,3 +7,7 @@ subprojects/prometheus-client-c
 subprojects/usrsctp
 
 webui/.next
+
+build/
+install/
+.vscode/
