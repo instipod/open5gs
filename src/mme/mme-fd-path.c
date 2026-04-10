@@ -2644,7 +2644,7 @@ void mme_s13_send_ecr(mme_ue_t *mme_ue)
     sess_data = ogs_calloc(1, sizeof (*sess_data));
     ogs_assert(sess_data);
 
-    sess_data->mme_ue = mme_ue;
+    sess_data->mme_ue_id = mme_ue->id;
 
     /* Create the request */
     ret = fd_msg_new(ogs_diam_s13_cmd_ecr, MSGFL_ALLOC_ETEID, &req);
@@ -2740,9 +2740,9 @@ void mme_s13_send_ecr(mme_ue_t *mme_ue)
     ogs_assert(ret == 0);
 
     /* Increment the counter */
-    ogs_assert(pthread_mutex_lock(&ogs_diam_logger_self()->stats_lock) == 0);
-    ogs_diam_logger_self()->stats.nb_sent++;
-    ogs_assert(pthread_mutex_unlock(&ogs_diam_logger_self()->stats_lock) == 0);
+    ogs_assert(pthread_mutex_lock(&ogs_diam_stats_self()->stats_lock) == 0);
+    ogs_diam_stats_self()->stats.nb_sent++;
+    ogs_assert(pthread_mutex_unlock(&ogs_diam_stats_self()->stats_lock) == 0);
 }
 
 /* MME received ME Identity Check Answer from EIR */
@@ -2795,8 +2795,13 @@ static void mme_s13_eca_cb(void *data, struct msg **msg)
         return;
     }
 
-    mme_ue = sess_data->mme_ue;
-    ogs_assert(mme_ue);
+    mme_ue = mme_ue_find_by_id(sess_data->mme_ue_id);
+    if (!mme_ue) {
+        ogs_error("MME-UE Context has already been removed [%d]",
+                sess_data->mme_ue_id);
+        error++;
+        goto out;
+    }
 
     /* Set ME-Identity-Check Command */
     s13_message = ogs_calloc(1, sizeof(ogs_diam_s13_message_t));
@@ -2891,7 +2896,7 @@ out:
         int rv;
         e = mme_event_new(MME_EVENT_S13_MESSAGE);
         ogs_assert(e);
-        e->mme_ue = mme_ue;
+        e->mme_ue_id = mme_ue->id;
         e->s13_message = s13_message;
         rv = ogs_queue_push(ogs_app()->queue, e);
         if (rv != OGS_OK) {
@@ -2904,30 +2909,30 @@ out:
     }
 
     /* Free the message */
-    ogs_assert(pthread_mutex_lock(&ogs_diam_logger_self()->stats_lock) == 0);
+    ogs_assert(pthread_mutex_lock(&ogs_diam_stats_self()->stats_lock) == 0);
     dur = ((ts.tv_sec - sess_data->ts.tv_sec) * 1000000) + 
         ((ts.tv_nsec - sess_data->ts.tv_nsec) / 1000);
-    if (ogs_diam_logger_self()->stats.nb_recv) {
+    if (ogs_diam_stats_self()->stats.nb_recv) {
         /* Ponderate in the avg */
-        ogs_diam_logger_self()->stats.avg = (ogs_diam_logger_self()->stats.avg * 
-            ogs_diam_logger_self()->stats.nb_recv + dur) /
-            (ogs_diam_logger_self()->stats.nb_recv + 1);
+        ogs_diam_stats_self()->stats.avg = (ogs_diam_stats_self()->stats.avg * 
+            ogs_diam_stats_self()->stats.nb_recv + dur) /
+            (ogs_diam_stats_self()->stats.nb_recv + 1);
         /* Min, max */
-        if (dur < ogs_diam_logger_self()->stats.shortest)
-            ogs_diam_logger_self()->stats.shortest = dur;
-        if (dur > ogs_diam_logger_self()->stats.longest)
-            ogs_diam_logger_self()->stats.longest = dur;
+        if (dur < ogs_diam_stats_self()->stats.shortest)
+            ogs_diam_stats_self()->stats.shortest = dur;
+        if (dur > ogs_diam_stats_self()->stats.longest)
+            ogs_diam_stats_self()->stats.longest = dur;
     } else {
-        ogs_diam_logger_self()->stats.shortest = dur;
-        ogs_diam_logger_self()->stats.longest = dur;
-        ogs_diam_logger_self()->stats.avg = dur;
+        ogs_diam_stats_self()->stats.shortest = dur;
+        ogs_diam_stats_self()->stats.longest = dur;
+        ogs_diam_stats_self()->stats.avg = dur;
     }
     if (error)
-        ogs_diam_logger_self()->stats.nb_errs++;
+        ogs_diam_stats_self()->stats.nb_errs++;
     else 
-        ogs_diam_logger_self()->stats.nb_recv++;
+        ogs_diam_stats_self()->stats.nb_recv++;
 
-    ogs_assert(pthread_mutex_unlock(&ogs_diam_logger_self()->stats_lock) == 0);
+    ogs_assert(pthread_mutex_unlock(&ogs_diam_stats_self()->stats_lock) == 0);
     
     /* Display how long it took */
     if (ts.tv_nsec > sess_data->ts.tv_nsec)
