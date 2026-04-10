@@ -692,9 +692,13 @@ cleanup:
         ogs_free(s6a_message);
         break;
     case MME_EVENT_S13_MESSAGE:
-        mme_ue = e->mme_ue;
-        ogs_assert(mme_ue);
+        mme_ue = mme_ue_find_by_id(e->mme_ue_id);
         s13_message = e->s13_message;
+        if (!mme_ue) {
+            ogs_error("UE(mme-ue) context has already been removed");
+            ogs_free(s13_message);
+            break;
+        }
         ogs_assert(s13_message);
 
         switch(s13_message->cmd_code) {
@@ -703,26 +707,29 @@ cleanup:
                 if (emm_cause != OGS_NAS_EMM_CAUSE_REQUEST_ACCEPTED) {
                     ogs_info("[%s] Attach reject [OGS_NAS_EMM_CAUSE:%d]",
                             mme_ue->imsi_bcd, emm_cause);
-                    enb_ue = enb_ue_cycle(mme_ue->enb_ue);
+                    enb_ue = enb_ue_find_by_id(mme_ue->enb_ue_id);
                     if (!enb_ue) {
                         ogs_error("S13 context has already been removed");
                         break;
                     }
-                    ogs_assert(OGS_OK ==
-                        nas_eps_send_attach_reject(mme_ue, emm_cause,
-                            OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED));
+                    r = nas_eps_send_attach_reject(enb_ue, mme_ue, emm_cause,
+                            OGS_NAS_ESM_CAUSE_PROTOCOL_ERROR_UNSPECIFIED);
+                    ogs_expect(r == OGS_OK);
+                    ogs_assert(r != OGS_ERROR);
 
-                    ogs_assert(OGS_OK ==
-                        s1ap_send_ue_context_release_command(enb_ue,
+                    r = s1ap_send_ue_context_release_command(enb_ue,
                             S1AP_Cause_PR_nas, S1AP_CauseNas_normal_release,
-                            S1AP_UE_CTX_REL_UE_CONTEXT_REMOVE, 0));
+                            S1AP_UE_CTX_REL_UE_CONTEXT_REMOVE, 0);
+                    ogs_expect(r == OGS_OK);
+                    ogs_assert(r != OGS_ERROR);
                     break;
                 }
                 else {
                     /* Now that the UE has been
-                     * validated we can send the 
+                     * validated we can send the
                      * Update Location Request to HSS */
-                    mme_s6a_send_ulr(mme_ue);
+                    enb_ue = enb_ue_find_by_id(mme_ue->enb_ue_id);
+                    mme_s6a_send_ulr(enb_ue, mme_ue, 0);
                 }
                 break;
             default:
