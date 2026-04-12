@@ -17,6 +17,10 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+
 #include "context.h"
 #include "pfcp-path.h"
 
@@ -96,6 +100,12 @@ void upf_context_final(void)
     free_upf_route_trie_node(self.ipv4_framed_routes);
     free_upf_route_trie_node(self.ipv6_framed_routes);
 
+    if (self.imsi_mac_map) {
+        ogs_free(self.imsi_mac_map);
+        self.imsi_mac_map = NULL;
+        self.imsi_mac_map_count = 0;
+    }
+
     ogs_pool_final(&upf_sess_pool);
     ogs_pool_final(&upf_n4_seid_pool);
 
@@ -105,6 +115,155 @@ void upf_context_final(void)
 upf_context_t *upf_self(void)
 {
     return &self;
+}
+
+/*
+ * Parse a MAC prefix string of the form "XX:XX:XX" (hex, colon-separated)
+ * into three bytes.  Returns true on success.
+ */
+static bool parse_mac_prefix(const char *s, uint8_t out[3])
+{
+    unsigned int b0, b1, b2;
+    if (sscanf(s, "%02x:%02x:%02x", &b0, &b1, &b2) != 3)
+        return false;
+    if (b0 > 0xff || b1 > 0xff || b2 > 0xff)
+        return false;
+    out[0] = (uint8_t)b0;
+    out[1] = (uint8_t)b1;
+    out[2] = (uint8_t)b2;
+    return true;
+}
+
+/*
+ * Convert an 8-digit decimal IMSI prefix string to 4 BCD bytes using the
+ * 3GPP semi-octet encoding (low nibble = digit at even index).
+ * Returns true on success.
+ */
+static bool parse_imsi_prefix(const char *s, uint8_t out[4])
+{
+    int i;
+    if (strlen(s) != 8)
+        return false;
+    for (i = 0; i < 8; i++) {
+        if (s[i] < '0' || s[i] > '9')
+            return false;
+    }
+    for (i = 0; i < 4; i++) {
+        uint8_t lo = (uint8_t)(s[2 * i]     - '0');
+        uint8_t hi = (uint8_t)(s[2 * i + 1] - '0');
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+/*
+ * Load the IMSI-prefix → MAC-prefix CSV file.
+ * Expected format per line (comments with '#' and blank lines are skipped):
+ *   IMSIPREFIX,XX:XX:XX
+ * where IMSIPREFIX is exactly 8 decimal digits (first 8 digits of the IMSI)
+ * and XX:XX:XX is the 3-byte MAC prefix in hex with colon separators.
+ */
+static void upf_load_imsi_mac_csv(const char *path)
+{
+    FILE *f;
+    char line[256];
+    int capacity = 0;
+    int count = 0;
+    upf_imsi_mac_map_t *map = NULL;
+
+    f = fopen(path, "r");
+    if (!f) {
+        ogs_error("Cannot open IMSI-MAC CSV file '%s': %s",
+                  path, strerror(errno));
+        return;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        char *imsi_str, *mac_str, *comma;
+        upf_imsi_mac_map_t entry;
+
+        /* strip trailing newline/whitespace */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' ||
+                            line[len-1] == ' '  || line[len-1] == '\t'))
+            line[--len] = '\0';
+
+        /* skip blank lines and comments */
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#')
+            continue;
+
+        comma = strchr(p, ',');
+        if (!comma) {
+            ogs_warn("IMSI-MAC CSV: skipping malformed line: %s", p);
+            continue;
+        }
+        *comma = '\0';
+        imsi_str = p;
+        mac_str  = comma + 1;
+
+        /* trim whitespace around tokens */
+        while (*mac_str == ' ' || *mac_str == '\t') mac_str++;
+
+        if (!parse_imsi_prefix(imsi_str, entry.imsi_prefix)) {
+            ogs_warn("IMSI-MAC CSV: invalid IMSI prefix '%s', skipping",
+                     imsi_str);
+            continue;
+        }
+        if (!parse_mac_prefix(mac_str, entry.mac_prefix)) {
+            ogs_warn("IMSI-MAC CSV: invalid MAC prefix '%s', skipping",
+                     mac_str);
+            continue;
+        }
+
+        /* grow the array if needed */
+        if (count >= capacity) {
+            int new_cap = (capacity == 0) ? 16 : capacity * 2;
+            upf_imsi_mac_map_t *tmp = ogs_realloc(map,
+                    (size_t)new_cap * sizeof(*map));
+            if (!tmp) {
+                ogs_error("IMSI-MAC CSV: out of memory");
+                break;
+            }
+            map = tmp;
+            capacity = new_cap;
+        }
+        map[count++] = entry;
+
+        ogs_info("IMSI-MAC CSV: loaded IMSI prefix %s → MAC prefix "
+                 "%02x:%02x:%02x",
+                 imsi_str,
+                 entry.mac_prefix[0], entry.mac_prefix[1],
+                 entry.mac_prefix[2]);
+    }
+
+    fclose(f);
+
+    if (self.imsi_mac_map)
+        ogs_free(self.imsi_mac_map);
+    self.imsi_mac_map = map;
+    self.imsi_mac_map_count = count;
+
+    ogs_info("IMSI-MAC CSV: loaded %d entries from '%s'", count, path);
+}
+
+void upf_lookup_imsi_mac_prefix(const uint8_t *imsi, uint8_t imsi_len,
+                                 uint8_t mac_prefix[3])
+{
+    static const uint8_t default_prefix[3] = { 0x02, 0x00, 0x00 };
+    int i;
+
+    if (self.imsi_mac_map && imsi_len >= 4) {
+        for (i = 0; i < self.imsi_mac_map_count; i++) {
+            if (memcmp(imsi, self.imsi_mac_map[i].imsi_prefix, 4) == 0) {
+                memcpy(mac_prefix, self.imsi_mac_map[i].mac_prefix, 3);
+                return;
+            }
+        }
+    }
+
+    memcpy(mac_prefix, default_prefix, 3);
 }
 
 static int upf_context_prepare(void)
@@ -171,6 +330,10 @@ int upf_context_parse_config(void)
                             ogs_warn("unknown value `%s` for ue_to_ue_hairpin"
                                      " (use true/false)", v);
                     }
+                } else if (!strcmp(upf_key, "imsi_mac_csv")) {
+                    const char *v = ogs_yaml_iter_value(&upf_iter);
+                    if (v)
+                        upf_load_imsi_mac_csv(v);
                 } else
                     ogs_warn("unknown key `%s`", upf_key);
             }

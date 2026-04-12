@@ -135,7 +135,7 @@ void upf_n4_handle_session_establishment_request(
             uint8_t imsi_len = *ptr++;
             remaining--;
             if (remaining >= imsi_len && imsi_len <= OGS_MAX_IMSI_LEN) {
-                static const uint8_t imsi_mac_prefix[2] = { 0x02, 0x00 };
+                uint8_t imsi_mac_prefix[3];
                 int offset;
 
                 sess->imsi_len = imsi_len;
@@ -143,14 +143,17 @@ void upf_n4_handle_session_establishment_request(
 
                 /*
                  * Derive a per-subscriber destination MAC for TAP devices:
-                 *   Byte 0-1 : static locally-administered prefix (0x02:0x00)
-                 *   Byte 2-5 : last 4 BCD bytes of IMSI (MSIN, most unique part)
+                 *   Byte 0-2 : 3-byte prefix from CSV lookup (fallback 02:00:00)
+                 *   Byte 3-5 : last 3 BCD bytes of IMSI (MSIN, most unique part)
                  */
+                upf_lookup_imsi_mac_prefix(sess->imsi, imsi_len,
+                                           imsi_mac_prefix);
                 sess->imsi_mac_addr[0] = imsi_mac_prefix[0];
                 sess->imsi_mac_addr[1] = imsi_mac_prefix[1];
-                for (i = 0; i < 4; i++) {
-                    offset = (int)imsi_len - 4 + i;
-                    sess->imsi_mac_addr[2 + i] =
+                sess->imsi_mac_addr[2] = imsi_mac_prefix[2];
+                for (i = 0; i < 3; i++) {
+                    offset = (int)imsi_len - 3 + i;
+                    sess->imsi_mac_addr[3 + i] =
                         (offset >= 0) ? sess->imsi[offset] : 0;
                 }
 
