@@ -508,11 +508,15 @@ uint8_t upf_sess_set_ue_ip(upf_sess_t *sess,
     }
 
     ogs_info("UE F-SEID[UP:0x%lx CP:0x%lx] "
-             "APN[%s] PDN-Type[%d] IPv4[%s] IPv6[%s]",
+             "APN[%s] PDN-Type[%d] IPv4[%s] IPv6[%s] "
+             "MAC[%02x:%02x:%02x:%02x:%02x:%02x]",
         (long)sess->upf_n4_seid, (long)sess->smf_n4_f_seid.seid,
         pdr->dnn, session_type,
         sess->ipv4 ? OGS_INET_NTOP(&sess->ipv4->addr, buf1) : "",
-        sess->ipv6 ? OGS_INET6_NTOP(&sess->ipv6->addr, buf2) : "");
+        sess->ipv6 ? OGS_INET6_NTOP(&sess->ipv6->addr, buf2) : "",
+        sess->imsi_mac_addr[0], sess->imsi_mac_addr[1],
+        sess->imsi_mac_addr[2], sess->imsi_mac_addr[3],
+        sess->imsi_mac_addr[4], sess->imsi_mac_addr[5]);
 
     return cause_value;
 }

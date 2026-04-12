@@ -61,6 +61,57 @@ static ogs_pkbuf_pool_t *packet_pool = NULL;
 
 static void upf_gtp_handle_multicast(ogs_pkbuf_t *recvbuf);
 
+void upf_gtp_announce_subscriber(upf_sess_t *sess)
+{
+    ogs_pfcp_subnet_t *subnet = NULL;
+    ogs_pfcp_dev_t *dev = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    uint8_t size;
+    const uint8_t *announce_mac;
+
+    ogs_assert(sess);
+
+    announce_mac = (sess->imsi_len > 0) ? sess->imsi_mac_addr : proxy_mac_addr;
+
+    if (sess->ipv4) {
+        subnet = sess->ipv4->subnet;
+        if (subnet && subnet->dev && subnet->dev->is_tap) {
+            dev = subnet->dev;
+            pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+            ogs_assert(pkbuf);
+            ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+            ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+            size = garp_build(pkbuf->data,
+                    (const uint8_t *)sess->ipv4->addr, announce_mac);
+            if (size > 0) {
+                ogs_pkbuf_trim(pkbuf, size);
+                if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                    ogs_warn("gratuitous ARP write failed");
+            }
+            ogs_pkbuf_free(pkbuf);
+        }
+    }
+
+    if (sess->ipv6) {
+        subnet = sess->ipv6->subnet;
+        if (subnet && subnet->dev && subnet->dev->is_tap) {
+            dev = subnet->dev;
+            pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+            ogs_assert(pkbuf);
+            ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+            ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+            size = unsolicited_na_build(pkbuf->data,
+                    (const uint8_t *)sess->ipv6->addr, announce_mac);
+            if (size > 0) {
+                ogs_pkbuf_trim(pkbuf, size);
+                if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                    ogs_warn("unsolicited NA write failed");
+            }
+            ogs_pkbuf_free(pkbuf);
+        }
+    }
+}
+
 static int check_framed_routes(upf_sess_t *sess, int family, uint32_t *addr)
 {
     int i = 0;
@@ -122,16 +173,50 @@ static void _gtpv1_tun_recv_common_cb(
         uint16_t eth_type = _get_eth_type(recvbuf->data, recvbuf->len);
         uint8_t size;
 
+        /*
+         * Learn the gateway MAC from the source address of every unicast
+         * frame arriving on the TAP. This is used as the Ethernet destination
+         * when forwarding UE uplink packets back toward the gateway.
+         */
+        if (recvbuf->len >= ETHER_HDR_LEN) {
+            const uint8_t *src_mac =
+                    (const uint8_t *)recvbuf->data + ETHER_ADDR_LEN;
+            if (!(src_mac[0] & 0x01) &&
+                    memcmp(src_mac, proxy_mac_addr, ETHER_ADDR_LEN) != 0) {
+                ogs_pfcp_dev_t *tap_dev = NULL;
+                ogs_list_for_each(&ogs_pfcp_self()->dev_list, tap_dev) {
+                    if (tap_dev->fd == fd) {
+                        /*
+                         * Track IPv4 and IPv6 gateway MACs independently:
+                         * the two gateways may be different devices.
+                         */
+                        if (eth_type == ETHERTYPE_IP ||
+                                eth_type == ETHERTYPE_ARP)
+                            memcpy(tap_dev->gw_mac_addr,
+                                    src_mac, ETHER_ADDR_LEN);
+                        else if (eth_type == ETHERTYPE_IPV6)
+                            memcpy(tap_dev->gw6_mac_addr,
+                                    src_mac, ETHER_ADDR_LEN);
+                        break;
+                    }
+                }
+            }
+        }
+
         if (eth_type == ETHERTYPE_ARP) {
-            if (is_arp_req(recvbuf->data, recvbuf->len) &&
-                    upf_sess_find_by_ipv4(
-                        arp_parse_target_addr(recvbuf->data, recvbuf->len))) {
+            upf_sess_t *arp_sess = NULL;
+            if (is_arp_req(recvbuf->data, recvbuf->len))
+                arp_sess = upf_sess_find_by_ipv4(
+                        arp_parse_target_addr(recvbuf->data, recvbuf->len));
+            if (arp_sess) {
+                const uint8_t *reply_mac = (arp_sess->imsi_len > 0) ?
+                        arp_sess->imsi_mac_addr : proxy_mac_addr;
                 replybuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
                 ogs_assert(replybuf);
                 ogs_pkbuf_reserve(replybuf, OGS_TUN_MAX_HEADROOM);
                 ogs_pkbuf_put(replybuf, OGS_MAX_PKT_LEN-OGS_TUN_MAX_HEADROOM);
                 size = arp_reply(replybuf->data, recvbuf->data, recvbuf->len,
-                    proxy_mac_addr);
+                    reply_mac);
                 ogs_pkbuf_trim(replybuf, size);
                 ogs_info("[SEND] reply to ARP request: %u", size);
             } else {
@@ -139,12 +224,20 @@ static void _gtpv1_tun_recv_common_cb(
             }
         } else if (eth_type == ETHERTYPE_IPV6 &&
                     is_nd_req(recvbuf->data, recvbuf->len)) {
+            uint8_t nd_target[16];
+            const uint8_t *reply_mac = proxy_mac_addr;
+            if (nd_parse_target_addr(recvbuf->data, recvbuf->len, nd_target)) {
+                upf_sess_t *nd_sess =
+                        upf_sess_find_by_ipv6((uint32_t *)nd_target);
+                if (nd_sess && nd_sess->imsi_len > 0)
+                    reply_mac = nd_sess->imsi_mac_addr;
+            }
             replybuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
             ogs_assert(replybuf);
             ogs_pkbuf_reserve(replybuf, OGS_TUN_MAX_HEADROOM);
             ogs_pkbuf_put(replybuf, OGS_MAX_PKT_LEN-OGS_TUN_MAX_HEADROOM);
             size = nd_reply(replybuf->data, recvbuf->data, recvbuf->len,
-                proxy_mac_addr);
+                reply_mac);
             ogs_pkbuf_trim(replybuf, size);
             ogs_info("[SEND] reply to ND solicit: %u", size);
         }
@@ -828,14 +921,37 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
             }
 
             if (dev->is_tap) {
+                /*
+                 * UE uplink frames forwarded to the gateway via TAP:
+                 *   src MAC = subscriber's IMSI-derived MAC (proxy fallback if
+                 *             no IMSI), so the gateway can identify the source
+                 *             subscriber at L2 and update its ARP/NDP cache.
+                 *   dst MAC = gateway MAC learned from incoming TAP frames
+                 *             (broadcast until the first frame is received).
+                 */
+                static const uint8_t broadcast_mac[ETHER_ADDR_LEN] =
+                    {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+                static const uint8_t zero_mac[ETHER_ADDR_LEN] = {0};
+                const uint8_t *src_mac = (sess->imsi_len > 0) ?
+                    sess->imsi_mac_addr : proxy_mac_addr;
+                /*
+                 * IPv4 and IPv6 gateways may be different devices and
+                 * therefore have different MACs.  Select the appropriate
+                 * learned MAC; fall back to broadcast if not yet known.
+                 */
+                const uint8_t *gw_mac = (eth_type == ETHERTYPE_IPV6) ?
+                    dev->gw6_mac_addr : dev->gw_mac_addr;
+                const uint8_t *dst_mac =
+                    (memcmp(gw_mac, zero_mac, ETHER_ADDR_LEN) != 0) ?
+                    gw_mac : broadcast_mac;
                 ogs_assert(eth_type);
                 eth_type = htobe16(eth_type);
                 ogs_pkbuf_push(pkbuf, sizeof(eth_type));
                 memcpy(pkbuf->data, &eth_type, sizeof(eth_type));
                 ogs_pkbuf_push(pkbuf, ETHER_ADDR_LEN);
-                memcpy(pkbuf->data, proxy_mac_addr, ETHER_ADDR_LEN);
+                memcpy(pkbuf->data, src_mac, ETHER_ADDR_LEN);
                 ogs_pkbuf_push(pkbuf, ETHER_ADDR_LEN);
-                memcpy(pkbuf->data, dev->mac_addr, ETHER_ADDR_LEN);
+                memcpy(pkbuf->data, dst_mac, ETHER_ADDR_LEN);
             }
 
             if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
@@ -948,6 +1064,102 @@ static void _get_dev_mac_addr(char *ifname, uint8_t *mac_addr)
 #endif
 }
 
+#define GW_ARP_RETRY_INTERVAL   (2 * OGS_USEC_PER_SEC)
+#define GW_ARP_REFRESH_INTERVAL (60 * OGS_USEC_PER_SEC)
+
+static void _send_gw_arp_request(ogs_pfcp_dev_t *dev)
+{
+    ogs_pfcp_subnet_t *subnet = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    uint8_t size;
+
+    ogs_list_for_each(&ogs_pfcp_self()->subnet_list, subnet) {
+        if (subnet->dev != dev || subnet->family != AF_INET)
+            continue;
+        if (!subnet->gw.family)
+            continue;
+
+        pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+        ogs_assert(pkbuf);
+        ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+        ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+        size = arp_request_build(pkbuf->data,
+                (const uint8_t *)subnet->gw.sub, proxy_mac_addr);
+        if (size > 0) {
+            ogs_pkbuf_trim(pkbuf, size);
+            if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                ogs_warn("[%s] gateway ARP request write failed", dev->ifname);
+            else
+                ogs_info("[%s] ARP request sent for gateway", dev->ifname);
+        }
+        ogs_pkbuf_free(pkbuf);
+        break; /* One subnet per device is sufficient to learn the gateway MAC */
+    }
+}
+
+static void _gw_arp_retry_cb(void *data)
+{
+    static const uint8_t zero_mac[ETHER_ADDR_LEN] = {0};
+    ogs_pfcp_dev_t *dev = (ogs_pfcp_dev_t *)data;
+    bool learned;
+
+    ogs_assert(dev);
+
+    _send_gw_arp_request(dev);
+
+    /* Retry at a fast rate until the gateway MAC is first learned, then
+     * keep refreshing once per minute so that a gateway MAC change
+     * (e.g. router replacement or failover) is picked up promptly. */
+    learned = (memcmp(dev->gw_mac_addr, zero_mac, ETHER_ADDR_LEN) != 0);
+    ogs_timer_start(dev->t_gw_arp,
+            learned ? GW_ARP_REFRESH_INTERVAL : GW_ARP_RETRY_INTERVAL);
+}
+
+static void _send_gw_nd_request(ogs_pfcp_dev_t *dev)
+{
+    ogs_pfcp_subnet_t *subnet = NULL;
+    ogs_pkbuf_t *pkbuf = NULL;
+    uint8_t size;
+
+    ogs_list_for_each(&ogs_pfcp_self()->subnet_list, subnet) {
+        if (subnet->dev != dev || subnet->family != AF_INET6)
+            continue;
+        if (!subnet->gw.family)
+            continue;
+
+        pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+        ogs_assert(pkbuf);
+        ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+        ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+        size = ns_request_build(pkbuf->data,
+                (const uint8_t *)subnet->gw.sub, proxy_mac_addr);
+        if (size > 0) {
+            ogs_pkbuf_trim(pkbuf, size);
+            if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                ogs_warn("[%s] gateway NS write failed", dev->ifname);
+            else
+                ogs_info("[%s] NS sent for IPv6 gateway", dev->ifname);
+        }
+        ogs_pkbuf_free(pkbuf);
+        break; /* One IPv6 subnet per device is sufficient */
+    }
+}
+
+static void _gw_nd_retry_cb(void *data)
+{
+    static const uint8_t zero_mac[ETHER_ADDR_LEN] = {0};
+    ogs_pfcp_dev_t *dev = (ogs_pfcp_dev_t *)data;
+    bool learned;
+
+    ogs_assert(dev);
+
+    _send_gw_nd_request(dev);
+
+    learned = (memcmp(dev->gw6_mac_addr, zero_mac, ETHER_ADDR_LEN) != 0);
+    ogs_timer_start(dev->t_gw_nd,
+            learned ? GW_ARP_REFRESH_INTERVAL : GW_ARP_RETRY_INTERVAL);
+}
+
 int upf_gtp_open(void)
 {
     ogs_pfcp_dev_t *dev = NULL;
@@ -997,6 +1209,22 @@ int upf_gtp_open(void)
             dev->poll = ogs_pollset_add(ogs_app()->pollset,
                     OGS_POLLIN, dev->fd, _gtpv1_tun_recv_eth_cb, NULL);
             ogs_assert(dev->poll);
+
+            /* Send an initial ARP request for the IPv4 gateway and retry
+             * every GW_ARP_RETRY_INTERVAL until the MAC is learned. */
+            dev->t_gw_arp = ogs_timer_add(
+                    ogs_app()->timer_mgr, _gw_arp_retry_cb, dev);
+            ogs_assert(dev->t_gw_arp);
+            _send_gw_arp_request(dev);
+            ogs_timer_start(dev->t_gw_arp, GW_ARP_RETRY_INTERVAL);
+
+            /* Send an initial NS for the IPv6 gateway (may differ from the
+             * IPv4 gateway) and retry until the MAC is learned. */
+            dev->t_gw_nd = ogs_timer_add(
+                    ogs_app()->timer_mgr, _gw_nd_retry_cb, dev);
+            ogs_assert(dev->t_gw_nd);
+            _send_gw_nd_request(dev);
+            ogs_timer_start(dev->t_gw_nd, GW_ARP_RETRY_INTERVAL);
         } else {
             dev->poll = ogs_pollset_add(ogs_app()->pollset,
                     OGS_POLLIN, dev->fd, _gtpv1_tun_recv_cb, NULL);
@@ -1036,6 +1264,10 @@ void upf_gtp_close(void)
     ogs_socknode_remove_all(&ogs_gtp_self()->gtpu_list);
 
     ogs_list_for_each(&ogs_pfcp_self()->dev_list, dev) {
+        if (dev->t_gw_arp)
+            ogs_timer_delete(dev->t_gw_arp);
+        if (dev->t_gw_nd)
+            ogs_timer_delete(dev->t_gw_nd);
         if (dev->poll)
             ogs_pollset_remove(dev->poll);
         ogs_closesocket(dev->fd);

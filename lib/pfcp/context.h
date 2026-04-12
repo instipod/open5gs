@@ -359,6 +359,10 @@ typedef struct ogs_pfcp_dev_s {
     ogs_poll_t      *poll;
     bool            is_tap;
     uint8_t         mac_addr[6];
+    uint8_t         gw_mac_addr[6];  /* IPv4 gateway MAC learned from ARP replies */
+    uint8_t         gw6_mac_addr[6]; /* IPv6 gateway MAC learned from NA replies */
+    ogs_timer_t     *t_gw_arp;       /* Retry timer for IPv4 gateway MAC discovery */
+    ogs_timer_t     *t_gw_nd;        /* Retry timer for IPv6 gateway MAC discovery */
 } ogs_pfcp_dev_t;
 
 typedef struct ogs_pfcp_subnet_s {

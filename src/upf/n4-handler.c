@@ -120,6 +120,44 @@ void upf_n4_handle_session_establishment_request(
         ogs_assert(sess->apn_dnn);
     }
 
+    if (req->user_id.presence && req->user_id.len >= 1) {
+        /*
+         * Parse User ID IE (TS 29.244 8.2.101) to extract IMSI.
+         * Wire format: flags(1) [imsi_len(1) imsi(n)] [imeisv_len(1)...] ...
+         */
+        uint8_t *ptr = (uint8_t *)req->user_id.data;
+        int remaining = req->user_id.len;
+        uint8_t uid_flags = *ptr++;
+        remaining--;
+
+        if ((uid_flags & 0x01) && remaining >= 1) {
+            /* IMSIF bit set */
+            uint8_t imsi_len = *ptr++;
+            remaining--;
+            if (remaining >= imsi_len && imsi_len <= OGS_MAX_IMSI_LEN) {
+                static const uint8_t imsi_mac_prefix[2] = { 0x02, 0x00 };
+                int offset;
+
+                sess->imsi_len = imsi_len;
+                memcpy(sess->imsi, ptr, imsi_len);
+
+                /*
+                 * Derive a per-subscriber destination MAC for TAP devices:
+                 *   Byte 0-1 : static locally-administered prefix (0x02:0x00)
+                 *   Byte 2-5 : last 4 BCD bytes of IMSI (MSIN, most unique part)
+                 */
+                sess->imsi_mac_addr[0] = imsi_mac_prefix[0];
+                sess->imsi_mac_addr[1] = imsi_mac_prefix[1];
+                for (i = 0; i < 4; i++) {
+                    offset = (int)imsi_len - 4 + i;
+                    sess->imsi_mac_addr[2 + i] =
+                        (offset >= 0) ? sess->imsi[offset] : 0;
+                }
+
+            }
+        }
+    }
+
     for (i = 0; i < OGS_MAX_NUM_OF_QER; i++) {
         if (ogs_pfcp_handle_create_qer(&sess->pfcp, &req->create_qer[i],
                     &cause_value, &offending_ie_value) == NULL)
@@ -210,6 +248,15 @@ void upf_n4_handle_session_establishment_request(
                 goto cleanup;
         }
     }
+
+    /*
+     * Announce the per-subscriber MAC to the upstream gateway via a
+     * gratuitous ARP (IPv4) and/or unsolicited Neighbor Advertisement (IPv6).
+     * This proactively populates the router's ARP/NDP cache so that downlink
+     * packets are forwarded to the correct IMSI-derived MAC immediately,
+     * without waiting for the router to issue its own ARP/NDP request.
+     */
+    upf_gtp_announce_subscriber(sess);
 
     /* Send Buffered Packet to gNB/SGW */
     ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {

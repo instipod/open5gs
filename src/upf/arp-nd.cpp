@@ -23,6 +23,7 @@
 #include <tins/ethernetII.h>
 #include <tins/hw_address.h>
 #include <tins/icmpv6.h>
+#include <tins/ipv6.h>
 #include <tins/exceptions.h>
 
 #include "arp-nd.h"
@@ -103,6 +104,135 @@ bool is_nd_req(uint8_t *data, uint len)
     return false;
 }
 
+uint8_t arp_request_build(uint8_t *buf, const uint8_t *target_ipv4,
+        const uint8_t *sender_mac)
+{
+    /*
+     * Standard ARP WHO-HAS request.  sender_ip is 0.0.0.0 (ARP probe
+     * per RFC 5227) since the UPF has no IP address on the TAP interface.
+     * All compliant implementations will still reply with their MAC.
+     */
+    uint32_t addr_ne;
+    memcpy(&addr_ne, target_ipv4, sizeof(addr_ne));
+    HWAddress<ETHER_ADDR_LEN> src_mac(sender_mac);
+    IPv4Address tip(addr_ne);
+
+    ARP req;
+    req.opcode(ARP::REQUEST);
+    req.sender_hw_addr(src_mac);
+    req.sender_ip_addr(IPv4Address("0.0.0.0"));
+    req.target_hw_addr(HWAddress<ETHER_ADDR_LEN>());
+    req.target_ip_addr(tip);
+
+    EthernetII frame(HWAddress<ETHER_ADDR_LEN>("ff:ff:ff:ff:ff:ff"), src_mac);
+    frame /= req;
+    return _serialize_reply(buf, frame);
+}
+
+uint8_t ns_request_build(uint8_t *buf, const uint8_t *target_ipv6,
+        const uint8_t *sender_mac)
+{
+    /*
+     * Neighbor Solicitation to discover the gateway's link-layer address.
+     * Destination is the solicited-node multicast for the target address.
+     * Source IPv6 is the link-local derived from sender_mac via EUI-64.
+     * RFC 4861 §4.3: hop limit = 255, source link-layer option included.
+     */
+
+    /* Solicited-node multicast: ff02::1:ff<last-3-bytes-of-target> */
+    uint8_t sol_node[16] = {
+        0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x01, 0xff,
+        target_ipv6[13], target_ipv6[14], target_ipv6[15]
+    };
+    /* Ethernet dst: 33:33:ff:<last-3> */
+    uint8_t eth_dst[ETHER_ADDR_LEN] = {
+        0x33, 0x33, 0xff,
+        target_ipv6[13], target_ipv6[14], target_ipv6[15]
+    };
+    /* Link-local source derived from sender_mac via EUI-64 */
+    uint8_t src_ip[16] = {
+        0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        (uint8_t)(sender_mac[0] ^ 0x02), sender_mac[1], sender_mac[2],
+        0xff, 0xfe,
+        sender_mac[3], sender_mac[4], sender_mac[5]
+    };
+
+    IPv6Address target_addr(target_ipv6);
+    IPv6Address sol_node_addr(sol_node);
+    IPv6Address src_addr(src_ip);
+
+    ICMPv6 ns(ICMPv6::NEIGHBOUR_SOLICIT);
+    ns.target_addr(target_addr);
+    ns.source_link_layer_addr(HWAddress<ETHER_ADDR_LEN>(sender_mac));
+
+    IPv6 ip6(sol_node_addr, src_addr);
+    ip6.hop_limit(255);
+
+    HWAddress<ETHER_ADDR_LEN> dst_mac_addr(eth_dst);
+    HWAddress<ETHER_ADDR_LEN> src_mac_addr(sender_mac);
+    EthernetII frame(dst_mac_addr, src_mac_addr);
+    frame /= ip6 / ns;
+    return _serialize_reply(buf, frame);
+}
+
+uint8_t garp_build(uint8_t *buf, const uint8_t *ipv4_addr, const uint8_t *mac)
+{
+    /* Gratuitous ARP: sender == target, Ethernet destination is broadcast */
+    uint32_t addr_ne;
+    memcpy(&addr_ne, ipv4_addr, sizeof(addr_ne));
+    HWAddress<ETHER_ADDR_LEN> src_mac(mac);
+    IPv4Address ip(addr_ne);
+
+    ARP garp;
+    garp.opcode(ARP::REQUEST);
+    garp.sender_hw_addr(src_mac);
+    garp.sender_ip_addr(ip);
+    garp.target_hw_addr(HWAddress<ETHER_ADDR_LEN>());
+    garp.target_ip_addr(ip);
+
+    EthernetII frame(HWAddress<ETHER_ADDR_LEN>("ff:ff:ff:ff:ff:ff"), src_mac);
+    frame /= garp;
+    return _serialize_reply(buf, frame);
+}
+
+uint8_t unsolicited_na_build(uint8_t *buf, const uint8_t *ipv6_addr,
+        const uint8_t *mac)
+{
+    /*
+     * Unsolicited Neighbor Advertisement:
+     *   src IPv6  = UE address, dst IPv6 = ff02::1 (all nodes)
+     *   Override flag set so receivers update existing cache entries
+     *   Ethernet dst = 33:33:00:00:00:01 (mapped multicast for ff02::1)
+     */
+    HWAddress<ETHER_ADDR_LEN> src_mac(mac);
+    IPv6Address ue_ip(ipv6_addr);
+
+    ICMPv6 na(ICMPv6::NEIGHBOUR_ADVERT);
+    na.target_addr(ue_ip);
+    na.target_link_layer_addr(src_mac);
+    na.override(true);
+
+    IPv6 ip6(IPv6Address("ff02::1"), ue_ip);
+    ip6.hop_limit(255);
+
+    EthernetII frame(HWAddress<ETHER_ADDR_LEN>("33:33:00:00:00:01"), src_mac);
+    frame /= ip6 / na;
+    return _serialize_reply(buf, frame);
+}
+
+bool nd_parse_target_addr(uint8_t *data, uint len, uint8_t *target_addr)
+{
+    EthernetII pdu(data, len);
+    if (_parse_nd(pdu)) {
+        const ICMPv6& icmp6 = pdu.rfind_pdu<ICMPv6>();
+        IPv6Address target = icmp6.target_addr();
+        std::copy(target.begin(), target.end(), target_addr);
+        return true;
+    }
+    return false;
+}
+
 uint8_t nd_reply(uint8_t *reply_data, uint8_t *request_data, uint len,
         const uint8_t *mac)
 {
@@ -114,6 +244,7 @@ uint8_t nd_reply(uint8_t *reply_data, uint8_t *request_data, uint len,
         ICMPv6 nd_reply(ICMPv6::NEIGHBOUR_ADVERT);
         nd_reply.target_link_layer_addr(source_mac);
         nd_reply.target_addr(icmp6.target_addr());
+        nd_reply.override(true);
         reply /= nd_reply;
         return _serialize_reply(reply_data, reply);
     }
