@@ -71,7 +71,7 @@ void upf_gtp_announce_subscriber(upf_sess_t *sess)
 
     ogs_assert(sess);
 
-    announce_mac = (sess->imsi_len > 0) ? sess->imsi_mac_addr : proxy_mac_addr;
+    announce_mac = (sess->imeisv_len > 0) ? sess->imeisv_mac_addr : proxy_mac_addr;
 
     if (sess->ipv4) {
         subnet = sess->ipv4->subnet;
@@ -247,8 +247,8 @@ static void _gtpv1_tun_recv_common_cb(
                 arp_sess = upf_sess_find_by_ipv4(target_ip);
             }
             if (arp_sess) {
-                const uint8_t *reply_mac = (arp_sess->imsi_len > 0) ?
-                        arp_sess->imsi_mac_addr : proxy_mac_addr;
+                const uint8_t *reply_mac = (arp_sess->imeisv_len > 0) ?
+                        arp_sess->imeisv_mac_addr : proxy_mac_addr;
                 replybuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
                 ogs_assert(replybuf);
                 ogs_pkbuf_reserve(replybuf, OGS_TUN_MAX_HEADROOM);
@@ -273,8 +273,8 @@ static void _gtpv1_tun_recv_common_cb(
                     OGS_INET6_NTOP(nd_target, buf));
                 upf_sess_t *nd_sess =
                         upf_sess_find_by_ipv6((uint32_t *)nd_target);
-                if (nd_sess && nd_sess->imsi_len > 0)
-                    reply_mac = nd_sess->imsi_mac_addr;
+                if (nd_sess && nd_sess->imeisv_len > 0)
+                    reply_mac = nd_sess->imeisv_mac_addr;
             }
             replybuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
             ogs_assert(replybuf);
@@ -979,8 +979,8 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
                 static const uint8_t broadcast_mac[ETHER_ADDR_LEN] =
                     {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
                 static const uint8_t zero_mac[ETHER_ADDR_LEN] = {0};
-                const uint8_t *src_mac = (sess->imsi_len > 0) ?
-                    sess->imsi_mac_addr : proxy_mac_addr;
+                const uint8_t *src_mac = (sess->imeisv_len > 0) ?
+                    sess->imeisv_mac_addr : proxy_mac_addr;
                 /*
                  * IPv4 and IPv6 gateways may be different devices and
                  * therefore have different MACs.  Select the appropriate

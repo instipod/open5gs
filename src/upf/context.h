@@ -137,10 +137,10 @@ typedef struct upf_sess_s {
     char            *gx_sid;            /* Gx Session ID */
     ogs_pfcp_node_t *pfcp_node;
 
-    /* Subscriber identity */
-    uint8_t         imsi[OGS_MAX_IMSI_LEN];
-    uint8_t         imsi_len;
-    uint8_t         imsi_mac_addr[6];   /* Per-subscriber MAC: static prefix + IMSI bytes */
+    /* Subscriber device identity */
+    uint8_t         imeisv[OGS_MAX_IMEISV_LEN];
+    uint8_t         imeisv_len;
+    uint8_t         imeisv_mac_addr[6]; /* Per-device MAC: TAC prefix + IMEISV serial bytes */
 
     /* Accounting: */
     upf_sess_urr_acc_t urr_acc[OGS_MAX_NUM_OF_URR]; /* FIXME: This probably needs to be mved to a hashtable or alike */

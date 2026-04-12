@@ -139,7 +139,7 @@ static bool parse_mac_prefix(const char *s, uint8_t out[3])
  * 3GPP semi-octet encoding (low nibble = digit at even index).
  * Returns true on success.
  */
-static bool parse_imsi_prefix(const char *s, uint8_t out[4])
+static bool parse_imei_prefix(const char *s, uint8_t out[4])
 {
     int i;
     if (strlen(s) != 8)
@@ -206,7 +206,7 @@ static void upf_load_imsi_mac_csv(const char *path)
         /* trim whitespace around tokens */
         while (*mac_str == ' ' || *mac_str == '\t') mac_str++;
 
-        if (!parse_imsi_prefix(imsi_str, entry.imei_prefix)) {
+        if (!parse_imei_prefix(imsi_str, entry.imei_prefix)) {
             ogs_warn("IMSI-MAC CSV: invalid IMSI prefix '%s', skipping",
                      imsi_str);
             continue;
@@ -677,9 +677,9 @@ uint8_t upf_sess_set_ue_ip(upf_sess_t *sess,
         pdr->dnn, session_type,
         sess->ipv4 ? OGS_INET_NTOP(&sess->ipv4->addr, buf1) : "",
         sess->ipv6 ? OGS_INET6_NTOP(&sess->ipv6->addr, buf2) : "",
-        sess->imsi_mac_addr[0], sess->imsi_mac_addr[1],
-        sess->imsi_mac_addr[2], sess->imsi_mac_addr[3],
-        sess->imsi_mac_addr[4], sess->imsi_mac_addr[5]);
+        sess->imeisv_mac_addr[0], sess->imeisv_mac_addr[1],
+        sess->imeisv_mac_addr[2], sess->imeisv_mac_addr[3],
+        sess->imeisv_mac_addr[4], sess->imeisv_mac_addr[5]);
 
     return cause_value;
 }
