@@ -99,6 +99,35 @@ void upf_gtp_announce_subscriber(upf_sess_t *sess)
                         announce_mac[3], announce_mac[4], announce_mac[5]);
             }
             ogs_pkbuf_free(pkbuf);
+
+            /*
+             * Immediately follow the GARP with a proper ARP who-has for the
+             * gateway, using the UE IP as sender_ip.  The startup probe uses
+             * sender_ip=0.0.0.0 (RFC 5227) which many gateways silently ignore.
+             * A who-has with a real sender IP guarantees a unicast reply that
+             * teaches us the gateway MAC before any downlink traffic arrives.
+             */
+            if (subnet->gw.family == AF_INET) {
+                char buf[OGS_ADDRSTRLEN];
+                pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+                ogs_assert(pkbuf);
+                ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+                ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+                size = arp_who_has_build(pkbuf->data,
+                        (const uint8_t *)subnet->gw.sub,
+                        (const uint8_t *)sess->ipv4->addr,
+                        announce_mac);
+                if (size > 0) {
+                    ogs_pkbuf_trim(pkbuf, size);
+                    if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                        ogs_warn("gateway ARP who-has write failed");
+                    else
+                        ogs_debug("[%s] ARP who-has sent for gateway [%s]",
+                            dev->ifname,
+                            OGS_INET_NTOP(&subnet->gw.sub, buf));
+                }
+                ogs_pkbuf_free(pkbuf);
+            }
         }
     }
 
@@ -1135,23 +1164,58 @@ static void _send_gw_arp_request(ogs_pfcp_dev_t *dev)
         if (!subnet->gw.family)
             continue;
 
-        pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
-        ogs_assert(pkbuf);
-        ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
-        ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
-        size = arp_request_build(pkbuf->data,
-                (const uint8_t *)subnet->gw.sub, proxy_mac_addr);
-        if (size > 0) {
-            char buf[OGS_ADDRSTRLEN];
-            ogs_pkbuf_trim(pkbuf, size);
-            if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
-                ogs_warn("[%s] gateway ARP request write failed", dev->ifname);
-            else
-                ogs_debug("[%s] ARP request sent for gateway [%s]",
-                    dev->ifname,
-                    OGS_INET_NTOP(&subnet->gw.sub, buf));
+        /*
+         * Prefer sending the ARP who-has with a real sender IP/MAC taken from
+         * any active session on this subnet.  A probe with sender_ip=0.0.0.0
+         * (RFC 5227) is often silently ignored by gateways.  Using a real UE
+         * IP guarantees a unicast reply that updates gw_mac_addr, which is
+         * important for detecting gateway MAC changes (e.g. router failover)
+         * even when no downlink traffic is flowing.
+         * Fall back to the RFC 5227 probe when no sessions are active.
+         */
+        {
+            static const uint8_t zero_mac[ETHER_ADDR_LEN] = {0};
+            upf_sess_t *s = NULL;
+            const uint8_t *sender_ip = NULL;
+            const uint8_t *sender_mac = proxy_mac_addr;
+
+            ogs_list_for_each(&upf_self()->sess_list, s) {
+                if (!s->ipv4)
+                    continue;
+                if (s->ipv4->subnet != subnet)
+                    continue;
+                sender_ip = (const uint8_t *)s->ipv4->addr;
+                if (memcmp(s->imeisv_mac_addr, zero_mac, ETHER_ADDR_LEN) != 0)
+                    sender_mac = s->imeisv_mac_addr;
+                break;
+            }
+
+            pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+            ogs_assert(pkbuf);
+            ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+            ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+
+            if (sender_ip) {
+                size = arp_who_has_build(pkbuf->data,
+                        (const uint8_t *)subnet->gw.sub,
+                        sender_ip, sender_mac);
+            } else {
+                size = arp_request_build(pkbuf->data,
+                        (const uint8_t *)subnet->gw.sub, proxy_mac_addr);
+            }
+
+            if (size > 0) {
+                char buf[OGS_ADDRSTRLEN];
+                ogs_pkbuf_trim(pkbuf, size);
+                if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                    ogs_warn("[%s] gateway ARP request write failed", dev->ifname);
+                else
+                    ogs_debug("[%s] ARP request sent for gateway [%s]",
+                        dev->ifname,
+                        OGS_INET_NTOP(&subnet->gw.sub, buf));
+            }
+            ogs_pkbuf_free(pkbuf);
         }
-        ogs_pkbuf_free(pkbuf);
         break; /* One subnet per device is sufficient to learn the gateway MAC */
     }
 }

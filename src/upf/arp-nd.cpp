@@ -176,6 +176,33 @@ uint8_t ns_request_build(uint8_t *buf, const uint8_t *target_ipv6,
     return _serialize_reply(buf, frame);
 }
 
+uint8_t arp_who_has_build(uint8_t *buf, const uint8_t *target_ipv4,
+        const uint8_t *sender_ipv4, const uint8_t *sender_mac)
+{
+    /*
+     * Standard ARP WHO-HAS with a real sender IP so the target will reply
+     * with its MAC.  Used after session establishment to learn the gateway
+     * MAC using the UE's assigned IP as the sender address.
+     */
+    uint32_t tip_ne, sip_ne;
+    memcpy(&tip_ne, target_ipv4, sizeof(tip_ne));
+    memcpy(&sip_ne, sender_ipv4, sizeof(sip_ne));
+    HWAddress<ETHER_ADDR_LEN> src_mac(sender_mac);
+    IPv4Address tip(tip_ne);
+    IPv4Address sip(sip_ne);
+
+    ARP req;
+    req.opcode(ARP::REQUEST);
+    req.sender_hw_addr(src_mac);
+    req.sender_ip_addr(sip);
+    req.target_hw_addr(HWAddress<ETHER_ADDR_LEN>());
+    req.target_ip_addr(tip);
+
+    EthernetII frame(HWAddress<ETHER_ADDR_LEN>("ff:ff:ff:ff:ff:ff"), src_mac);
+    frame /= req;
+    return _serialize_reply(buf, frame);
+}
+
 uint8_t garp_build(uint8_t *buf, const uint8_t *ipv4_addr, const uint8_t *mac)
 {
     /* Gratuitous ARP: sender == target, Ethernet destination is broadcast */
