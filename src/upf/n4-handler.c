@@ -268,10 +268,36 @@ void upf_n4_handle_session_establishment_request(
     }
 
     /*
+     * If no IMEISV was provided, derive a unique per-session MAC from the
+     * UE's IPv4 address so that every session has a distinct Ethernet identity
+     * on the TAP.  Using proxy_mac_addr for all sessions would cause the
+     * gateway to see repeated GARPs from the same MAC claiming different IPs,
+     * which suppresses the ARP response that teaches us the gateway MAC.
+     *
+     *   Byte 0  : 0x02 (locally-administered, unicast)
+     *   Bytes 1-2: 0x00:0x00 (reserved)
+     *   Bytes 3-5: octets 1-3 of the UE IPv4 address
+     *
+     * This gives a unique MAC within any reasonable UE IP pool.
+     */
+    if (sess->ipv4) {
+        static const uint8_t zero_mac[6] = {0};
+        if (memcmp(sess->imeisv_mac_addr, zero_mac, 6) == 0) {
+            const uint8_t *ip = (const uint8_t *)sess->ipv4->addr;
+            sess->imeisv_mac_addr[0] = 0x02;
+            sess->imeisv_mac_addr[1] = 0x00;
+            sess->imeisv_mac_addr[2] = 0x00;
+            sess->imeisv_mac_addr[3] = ip[1];
+            sess->imeisv_mac_addr[4] = ip[2];
+            sess->imeisv_mac_addr[5] = ip[3];
+        }
+    }
+
+    /*
      * Announce the per-subscriber MAC to the upstream gateway via a
      * gratuitous ARP (IPv4) and/or unsolicited Neighbor Advertisement (IPv6).
      * This proactively populates the router's ARP/NDP cache so that downlink
-     * packets are forwarded to the correct IMSI-derived MAC immediately,
+     * packets are forwarded to the correct IMEISV-derived MAC immediately,
      * without waiting for the router to issue its own ARP/NDP request.
      */
     upf_gtp_announce_subscriber(sess);
