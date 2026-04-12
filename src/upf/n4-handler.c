@@ -122,41 +122,61 @@ void upf_n4_handle_session_establishment_request(
 
     if (req->user_id.presence && req->user_id.len >= 1) {
         /*
-         * Parse User ID IE (TS 29.244 8.2.101) to extract IMSI.
-         * Wire format: flags(1) [imsi_len(1) imsi(n)] [imeisv_len(1)...] ...
+         * Parse User ID IE (TS 29.244 8.2.101).
+         * Wire format: flags(1) [imsi_len(1) imsi(n)] [imeisv_len(1) imeisv(n)] ...
+         *   IMSIF  = bit 0 (0x01): IMSI field present
+         *   IMEIF  = bit 1 (0x02): IMEISV field present
          */
         uint8_t *ptr = (uint8_t *)req->user_id.data;
         int remaining = req->user_id.len;
         uint8_t uid_flags = *ptr++;
         remaining--;
 
+        uint8_t imeisv[OGS_MAX_IMEISV_LEN];
+        uint8_t imeisv_len = 0;
+
+        /* Parse IMSI if present (IMSIF = bit 0) */
         if ((uid_flags & 0x01) && remaining >= 1) {
-            /* IMSIF bit set */
             uint8_t imsi_len = *ptr++;
             remaining--;
             if (remaining >= imsi_len && imsi_len <= OGS_MAX_IMSI_LEN) {
-                uint8_t imsi_mac_prefix[3];
-                int offset;
-
                 sess->imsi_len = imsi_len;
                 memcpy(sess->imsi, ptr, imsi_len);
+            }
+            if (remaining >= imsi_len) {
+                ptr += imsi_len;
+                remaining -= imsi_len;
+            }
+        }
 
-                /*
-                 * Derive a per-subscriber destination MAC for TAP devices:
-                 *   Byte 0-2 : 3-byte prefix from CSV lookup (fallback 02:00:00)
-                 *   Byte 3-5 : last 3 BCD bytes of IMSI (MSIN, most unique part)
-                 */
-                upf_lookup_imsi_mac_prefix(sess->imsi, imsi_len,
-                                           imsi_mac_prefix);
-                sess->imsi_mac_addr[0] = imsi_mac_prefix[0];
-                sess->imsi_mac_addr[1] = imsi_mac_prefix[1];
-                sess->imsi_mac_addr[2] = imsi_mac_prefix[2];
-                for (i = 0; i < 3; i++) {
-                    offset = (int)imsi_len - 3 + i;
-                    sess->imsi_mac_addr[3 + i] =
-                        (offset >= 0) ? sess->imsi[offset] : 0;
-                }
+        /* Parse IMEISV if present (IMEIF = bit 1) */
+        if ((uid_flags & 0x02) && remaining >= 1) {
+            uint8_t len = *ptr++;
+            remaining--;
+            if (remaining >= len && len <= OGS_MAX_IMEISV_LEN) {
+                imeisv_len = len;
+                memcpy(imeisv, ptr, len);
+            }
+        }
 
+        /* Derive per-subscriber MAC for TAP devices (requires IMSI) */
+        if (sess->imsi_len > 0) {
+            uint8_t mac_prefix[3];
+            int offset;
+
+            /*
+             *   Byte 0-2 : 3-byte prefix from IMEI TAC CSV lookup
+             *               (fallback 02:00:00 if IMEISV absent or no match)
+             *   Byte 3-5 : last 3 BCD bytes of IMSI (MSIN, most unique part)
+             */
+            upf_lookup_mac_prefix_by_imei(imeisv, imeisv_len, mac_prefix);
+            sess->imsi_mac_addr[0] = mac_prefix[0];
+            sess->imsi_mac_addr[1] = mac_prefix[1];
+            sess->imsi_mac_addr[2] = mac_prefix[2];
+            for (i = 0; i < 3; i++) {
+                offset = (int)sess->imsi_len - 3 + i;
+                sess->imsi_mac_addr[3 + i] =
+                    (offset >= 0) ? sess->imsi[offset] : 0;
             }
         }
     }

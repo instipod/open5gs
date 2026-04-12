@@ -157,10 +157,10 @@ static bool parse_imsi_prefix(const char *s, uint8_t out[4])
 }
 
 /*
- * Load the IMSI-prefix → MAC-prefix CSV file.
+ * Load the IMEI-TAC → MAC-prefix CSV file.
  * Expected format per line (comments with '#' and blank lines are skipped):
- *   IMSIPREFIX,XX:XX:XX
- * where IMSIPREFIX is exactly 8 decimal digits (first 8 digits of the IMSI)
+ *   IMEIPREFIX,XX:XX:XX
+ * where IMEIPREFIX is exactly 8 decimal digits (IMEI TAC, first 8 digits)
  * and XX:XX:XX is the 3-byte MAC prefix in hex with colon separators.
  */
 static void upf_load_imsi_mac_csv(const char *path)
@@ -231,7 +231,7 @@ static void upf_load_imsi_mac_csv(const char *path)
         }
         map[count++] = entry;
 
-        ogs_info("IMSI-MAC CSV: loaded IMSI prefix %s → MAC prefix "
+        ogs_info("IMEI-MAC CSV: loaded IMEI TAC %s → MAC prefix "
                  "%02x:%02x:%02x",
                  imsi_str,
                  entry.mac_prefix[0], entry.mac_prefix[1],
@@ -245,18 +245,18 @@ static void upf_load_imsi_mac_csv(const char *path)
     self.imsi_mac_map = map;
     self.imsi_mac_map_count = count;
 
-    ogs_info("IMSI-MAC CSV: loaded %d entries from '%s'", count, path);
+    ogs_info("IMEI-MAC CSV: loaded %d entries from '%s'", count, path);
 }
 
-void upf_lookup_imsi_mac_prefix(const uint8_t *imsi, uint8_t imsi_len,
-                                 uint8_t mac_prefix[3])
+void upf_lookup_mac_prefix_by_imei(const uint8_t *imeisv, uint8_t imeisv_len,
+                                    uint8_t mac_prefix[3])
 {
     static const uint8_t default_prefix[3] = { 0x02, 0x00, 0x00 };
     int i;
 
-    if (self.imsi_mac_map && imsi_len >= 4) {
+    if (self.imsi_mac_map && imeisv_len >= 4) {
         for (i = 0; i < self.imsi_mac_map_count; i++) {
-            if (memcmp(imsi, self.imsi_mac_map[i].imsi_prefix, 4) == 0) {
+            if (memcmp(imeisv, self.imsi_mac_map[i].imei_prefix, 4) == 0) {
                 memcpy(mac_prefix, self.imsi_mac_map[i].mac_prefix, 3);
                 return;
             }

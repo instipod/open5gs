@@ -47,12 +47,13 @@ extern int __upf_log_domain;
 
 struct upf_route_trie_node;
 
-/* One entry from the IMSI-prefix → MAC-prefix CSV file.
- * imsi_prefix: first 4 BCD bytes of the IMSI (= first 8 decimal digits,
- *              packed as per 3GPP semi-octet encoding: low nibble = even digit).
+/* One entry from the IMEI-TAC → MAC-prefix CSV file.
+ * imei_prefix: first 4 BCD bytes of the IMEISV (= IMEI TAC, first 8 decimal
+ *              digits, packed as per 3GPP semi-octet encoding:
+ *              low nibble = even-indexed digit).
  * mac_prefix:  three bytes to use as MAC[0..2] instead of the static 02:00:00. */
 typedef struct upf_imsi_mac_map_s {
-    uint8_t imsi_prefix[4];
+    uint8_t imei_prefix[4];
     uint8_t mac_prefix[3];
 } upf_imsi_mac_map_t;
 
@@ -152,11 +153,12 @@ upf_context_t *upf_self(void);
 
 int upf_context_parse_config(void);
 
-/* Look up the 3-byte MAC prefix for the given BCD IMSI bytes.
+/* Look up the 3-byte MAC prefix by matching the first 4 BCD bytes of the
+ * IMEISV (= first 8 digits = IMEI TAC) against the loaded CSV table.
  * Fills mac_prefix[3] with the matched entry's prefix, or the static
- * fallback {0x02, 0x00, 0x00} if no entry matches. */
-void upf_lookup_imsi_mac_prefix(const uint8_t *imsi, uint8_t imsi_len,
-                                 uint8_t mac_prefix[3]);
+ * fallback {0x02, 0x00, 0x00} if no entry matches or imeisv_len < 4. */
+void upf_lookup_mac_prefix_by_imei(const uint8_t *imeisv, uint8_t imeisv_len,
+                                    uint8_t mac_prefix[3]);
 
 upf_sess_t *upf_sess_add_by_message(ogs_pfcp_message_t *message);
 
