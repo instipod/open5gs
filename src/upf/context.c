@@ -206,7 +206,7 @@ static void upf_load_imsi_mac_csv(const char *path)
         /* trim whitespace around tokens */
         while (*mac_str == ' ' || *mac_str == '\t') mac_str++;
 
-        if (!parse_imsi_prefix(imsi_str, entry.imsi_prefix)) {
+        if (!parse_imsi_prefix(imsi_str, entry.imei_prefix)) {
             ogs_warn("IMSI-MAC CSV: invalid IMSI prefix '%s', skipping",
                      imsi_str);
             continue;
