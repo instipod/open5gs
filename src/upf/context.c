@@ -100,10 +100,10 @@ void upf_context_final(void)
     free_upf_route_trie_node(self.ipv4_framed_routes);
     free_upf_route_trie_node(self.ipv6_framed_routes);
 
-    if (self.imsi_mac_map) {
-        ogs_free(self.imsi_mac_map);
-        self.imsi_mac_map = NULL;
-        self.imsi_mac_map_count = 0;
+    if (self.imei_mac_map) {
+        ogs_free(self.imei_mac_map);
+        self.imei_mac_map = NULL;
+        self.imei_mac_map_count = 0;
     }
 
     ogs_pool_final(&upf_sess_pool);
@@ -135,7 +135,7 @@ static bool parse_mac_prefix(const char *s, uint8_t out[3])
 }
 
 /*
- * Convert an 8-digit decimal IMSI prefix string to 4 BCD bytes using the
+ * Convert an 8-digit decimal IMEI prefix string to 4 BCD bytes using the
  * 3GPP semi-octet encoding (low nibble = digit at even index).
  * Returns true on success.
  */
@@ -163,25 +163,25 @@ static bool parse_imei_prefix(const char *s, uint8_t out[4])
  * where IMEIPREFIX is exactly 8 decimal digits (IMEI TAC, first 8 digits)
  * and XX:XX:XX is the 3-byte MAC prefix in hex with colon separators.
  */
-static void upf_load_imsi_mac_csv(const char *path)
+static void upf_load_imei_mac_csv(const char *path)
 {
     FILE *f;
     char line[256];
     int capacity = 0;
     int count = 0;
-    upf_imsi_mac_map_t *map = NULL;
+    upf_imei_mac_map_t *map = NULL;
 
     f = fopen(path, "r");
     if (!f) {
-        ogs_error("Cannot open IMSI-MAC CSV file '%s': %s",
+        ogs_error("Cannot open IMEI-MAC CSV file '%s': %s",
                   path, strerror(errno));
         return;
     }
 
     while (fgets(line, sizeof(line), f)) {
         char *p = line;
-        char *imsi_str, *mac_str, *comma;
-        upf_imsi_mac_map_t entry;
+        char *imei_str, *mac_str, *comma;
+        upf_imei_mac_map_t entry;
 
         /* strip trailing newline/whitespace */
         size_t len = strlen(line);
@@ -196,23 +196,23 @@ static void upf_load_imsi_mac_csv(const char *path)
 
         comma = strchr(p, ',');
         if (!comma) {
-            ogs_warn("IMSI-MAC CSV: skipping malformed line: %s", p);
+            ogs_warn("IMEI-MAC CSV: skipping malformed line: %s", p);
             continue;
         }
         *comma = '\0';
-        imsi_str = p;
+        imei_str = p;
         mac_str  = comma + 1;
 
         /* trim whitespace around tokens */
         while (*mac_str == ' ' || *mac_str == '\t') mac_str++;
 
-        if (!parse_imei_prefix(imsi_str, entry.imei_prefix)) {
-            ogs_warn("IMSI-MAC CSV: invalid IMSI prefix '%s', skipping",
-                     imsi_str);
+        if (!parse_imei_prefix(imei_str, entry.imei_prefix)) {
+            ogs_warn("IMEI-MAC CSV: invalid IMEI prefix '%s', skipping",
+                     imei_str);
             continue;
         }
         if (!parse_mac_prefix(mac_str, entry.mac_prefix)) {
-            ogs_warn("IMSI-MAC CSV: invalid MAC prefix '%s', skipping",
+            ogs_warn("IMEI-MAC CSV: invalid MAC prefix '%s', skipping",
                      mac_str);
             continue;
         }
@@ -220,10 +220,10 @@ static void upf_load_imsi_mac_csv(const char *path)
         /* grow the array if needed */
         if (count >= capacity) {
             int new_cap = (capacity == 0) ? 16 : capacity * 2;
-            upf_imsi_mac_map_t *tmp = ogs_realloc(map,
+            upf_imei_mac_map_t *tmp = ogs_realloc(map,
                     (size_t)new_cap * sizeof(*map));
             if (!tmp) {
-                ogs_error("IMSI-MAC CSV: out of memory");
+                ogs_error("IMEI-MAC CSV: out of memory");
                 break;
             }
             map = tmp;
@@ -231,19 +231,19 @@ static void upf_load_imsi_mac_csv(const char *path)
         }
         map[count++] = entry;
 
-        ogs_info("IMEI-MAC CSV: loaded IMEI TAC %s → MAC prefix "
+        ogs_debug("IMEI-MAC CSV: loaded IMEI TAC %s → MAC prefix "
                  "%02x:%02x:%02x",
-                 imsi_str,
+                 imei_str,
                  entry.mac_prefix[0], entry.mac_prefix[1],
                  entry.mac_prefix[2]);
     }
 
     fclose(f);
 
-    if (self.imsi_mac_map)
-        ogs_free(self.imsi_mac_map);
-    self.imsi_mac_map = map;
-    self.imsi_mac_map_count = count;
+    if (self.imei_mac_map)
+        ogs_free(self.imei_mac_map);
+    self.imei_mac_map = map;
+    self.imei_mac_map_count = count;
 
     ogs_info("IMEI-MAC CSV: loaded %d entries from '%s'", count, path);
 }
@@ -254,10 +254,10 @@ void upf_lookup_mac_prefix_by_imei(const uint8_t *imeisv, uint8_t imeisv_len,
     static const uint8_t default_prefix[3] = { 0x02, 0x00, 0x00 };
     int i;
 
-    if (self.imsi_mac_map && imeisv_len >= 4) {
-        for (i = 0; i < self.imsi_mac_map_count; i++) {
-            if (memcmp(imeisv, self.imsi_mac_map[i].imei_prefix, 4) == 0) {
-                memcpy(mac_prefix, self.imsi_mac_map[i].mac_prefix, 3);
+    if (self.imei_mac_map && imeisv_len >= 4) {
+        for (i = 0; i < self.imei_mac_map_count; i++) {
+            if (memcmp(imeisv, self.imei_mac_map[i].imei_prefix, 4) == 0) {
+                memcpy(mac_prefix, self.imei_mac_map[i].mac_prefix, 3);
                 return;
             }
         }
@@ -330,10 +330,10 @@ int upf_context_parse_config(void)
                             ogs_warn("unknown value `%s` for ue_to_ue_hairpin"
                                      " (use true/false)", v);
                     }
-                } else if (!strcmp(upf_key, "imsi_mac_csv")) {
+                } else if (!strcmp(upf_key, "imei_mac_csv")) {
                     const char *v = ogs_yaml_iter_value(&upf_iter);
                     if (v)
-                        upf_load_imsi_mac_csv(v);
+                        upf_load_imei_mac_csv(v);
                 } else
                     ogs_warn("unknown key `%s`", upf_key);
             }

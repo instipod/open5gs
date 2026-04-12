@@ -52,17 +52,17 @@ struct upf_route_trie_node;
  *              digits, packed as per 3GPP semi-octet encoding:
  *              low nibble = even-indexed digit).
  * mac_prefix:  three bytes to use as MAC[0..2] instead of the static 02:00:00. */
-typedef struct upf_imsi_mac_map_s {
+typedef struct upf_imei_mac_map_s {
     uint8_t imei_prefix[4];
     uint8_t mac_prefix[3];
-} upf_imsi_mac_map_t;
+} upf_imei_mac_map_t;
 
 typedef struct upf_context_s {
     bool        ue_to_ue_hairpin;   /* hairpin UE-to-UE traffic at UPF (default: true) */
 
-    /* IMSI-prefix → MAC-prefix mapping loaded from CSV at startup */
-    upf_imsi_mac_map_t *imsi_mac_map;
-    int                 imsi_mac_map_count;
+    /* IMEI-prefix → MAC-prefix mapping loaded from CSV at startup */
+    upf_imei_mac_map_t *imei_mac_map;
+    int                 imei_mac_map_count;
 
     ogs_hash_t *upf_n4_seid_hash;   /* hash table (UPF-N4-SEID) */
     ogs_hash_t *smf_n4_seid_hash;   /* hash table (SMF-N4-SEID) */
