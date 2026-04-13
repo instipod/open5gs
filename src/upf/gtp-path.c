@@ -332,8 +332,11 @@ static void _gtpv1_tun_recv_common_cb(
             goto cleanup;
         }
         if (eth_type != ETHERTYPE_IP && eth_type != ETHERTYPE_IPV6) {
-            ogs_error("[DROP] Invalid eth_type [%x]]", eth_type);
-            ogs_log_hexdump(OGS_LOG_ERROR, recvbuf->data, recvbuf->len);
+            // Drop LLDP and any 802.3 frames as we don't care about this on the EPC side
+            // Generate a warning on any other packets we don't understand
+            if (eth_type != ETHERTYPE_LLDP && eth_type > 0x05DC) {
+                ogs_warn("[DROP] Invalid eth_type [%x]]", eth_type);
+            }
             goto cleanup;
         }
         ogs_pkbuf_pull(recvbuf, ETHER_HDR_LEN);
