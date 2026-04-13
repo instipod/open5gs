@@ -219,49 +219,47 @@ static void _gtpv1_tun_recv_common_cb(
         ogs_pkbuf_t *replybuf = NULL;
         uint16_t eth_type = _get_eth_type(recvbuf->data, recvbuf->len);
         uint8_t size;
+        ogs_pfcp_dev_t *tap_dev = NULL;
+        ogs_list_for_each(&ogs_pfcp_self()->dev_list, tap_dev) {
+            if (tap_dev->fd == fd) break;
+        }
 
         /*
          * Learn the gateway MAC from the source address of every unicast
          * frame arriving on the TAP. This is used as the Ethernet destination
          * when forwarding UE uplink packets back toward the gateway.
          */
-        if (recvbuf->len >= ETHER_HDR_LEN) {
+        if (tap_dev && recvbuf->len >= ETHER_HDR_LEN) {
             const uint8_t *src_mac =
                     (const uint8_t *)recvbuf->data + ETHER_ADDR_LEN;
             if (!(src_mac[0] & 0x01) &&
                     memcmp(src_mac, proxy_mac_addr, ETHER_ADDR_LEN) != 0) {
-                ogs_pfcp_dev_t *tap_dev = NULL;
-                ogs_list_for_each(&ogs_pfcp_self()->dev_list, tap_dev) {
-                    if (tap_dev->fd == fd) {
-                        /*
-                         * Track IPv4 and IPv6 gateway MACs independently:
-                         * the two gateways may be different devices.
-                         */
-                        if (eth_type == ETHERTYPE_IP ||
-                                eth_type == ETHERTYPE_ARP) {
-                            if (memcmp(tap_dev->gw_mac_addr,
-                                    src_mac, ETHER_ADDR_LEN) != 0) {
-                                memcpy(tap_dev->gw_mac_addr,
-                                        src_mac, ETHER_ADDR_LEN);
-                                ogs_info("[%s] learned IPv4 gateway MAC "
-                                    "%02x:%02x:%02x:%02x:%02x:%02x",
-                                    tap_dev->ifname,
-                                    src_mac[0], src_mac[1], src_mac[2],
-                                    src_mac[3], src_mac[4], src_mac[5]);
-                            }
-                        } else if (eth_type == ETHERTYPE_IPV6) {
-                            if (memcmp(tap_dev->gw6_mac_addr,
-                                    src_mac, ETHER_ADDR_LEN) != 0) {
-                                memcpy(tap_dev->gw6_mac_addr,
-                                        src_mac, ETHER_ADDR_LEN);
-                                ogs_info("[%s] learned IPv6 gateway MAC "
-                                    "%02x:%02x:%02x:%02x:%02x:%02x",
-                                    tap_dev->ifname,
-                                    src_mac[0], src_mac[1], src_mac[2],
-                                    src_mac[3], src_mac[4], src_mac[5]);
-                            }
-                        }
-                        break;
+                /*
+                 * Track IPv4 and IPv6 gateway MACs independently:
+                 * the two gateways may be different devices.
+                 */
+                if (eth_type == ETHERTYPE_IP ||
+                        eth_type == ETHERTYPE_ARP) {
+                    if (memcmp(tap_dev->gw_mac_addr,
+                            src_mac, ETHER_ADDR_LEN) != 0) {
+                        memcpy(tap_dev->gw_mac_addr,
+                                src_mac, ETHER_ADDR_LEN);
+                        ogs_info("[%s] learned IPv4 gateway MAC "
+                            "%02x:%02x:%02x:%02x:%02x:%02x",
+                            tap_dev->ifname,
+                            src_mac[0], src_mac[1], src_mac[2],
+                            src_mac[3], src_mac[4], src_mac[5]);
+                    }
+                } else if (eth_type == ETHERTYPE_IPV6) {
+                    if (memcmp(tap_dev->gw6_mac_addr,
+                            src_mac, ETHER_ADDR_LEN) != 0) {
+                        memcpy(tap_dev->gw6_mac_addr,
+                                src_mac, ETHER_ADDR_LEN);
+                        ogs_info("[%s] learned IPv6 gateway MAC "
+                            "%02x:%02x:%02x:%02x:%02x:%02x",
+                            tap_dev->ifname,
+                            src_mac[0], src_mac[1], src_mac[2],
+                            src_mac[3], src_mac[4], src_mac[5]);
                     }
                 }
             }
@@ -276,6 +274,11 @@ static void _gtpv1_tun_recv_common_cb(
                 ogs_debug("[RECV] ARP request for UE IP [%s]",
                     OGS_INET_NTOP(&target_ip, buf));
                 arp_sess = upf_sess_find_by_ipv4(target_ip);
+                /* Reject sessions homed on a different TAP device */
+                if (arp_sess && (!tap_dev || !arp_sess->ipv4 ||
+                        !arp_sess->ipv4->subnet ||
+                        arp_sess->ipv4->subnet->dev != tap_dev))
+                    arp_sess = NULL;
             }
             if (arp_sess) {
                 static const uint8_t zero_mac_arp[ETHER_ADDR_LEN] = {0};
@@ -307,6 +310,11 @@ static void _gtpv1_tun_recv_common_cb(
                     OGS_INET6_NTOP(nd_target, buf));
                 upf_sess_t *nd_sess =
                         upf_sess_find_by_ipv6((uint32_t *)nd_target);
+                /* Do not reply if the session is homed on a different TAP */
+                if (nd_sess && (!tap_dev || !nd_sess->ipv6 ||
+                        !nd_sess->ipv6->subnet ||
+                        nd_sess->ipv6->subnet->dev != tap_dev))
+                    goto cleanup;
                 static const uint8_t zero_mac_nd[ETHER_ADDR_LEN] = {0};
                 if (nd_sess && memcmp(nd_sess->imeisv_mac_addr,
                                      zero_mac_nd, ETHER_ADDR_LEN) != 0)
@@ -1034,7 +1042,10 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
                 const uint8_t *dst_mac =
                     (memcmp(gw_mac, zero_mac, ETHER_ADDR_LEN) != 0) ?
                     gw_mac : broadcast_mac;
-                ogs_assert(eth_type);
+                if (!eth_type) {
+                    ogs_error("[DROP] eth_type is 0 on TAP uplink path");
+                    goto cleanup;
+                }
                 eth_type = htobe16(eth_type);
                 ogs_pkbuf_push(pkbuf, sizeof(eth_type));
                 memcpy(pkbuf->data, &eth_type, sizeof(eth_type));
