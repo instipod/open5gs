@@ -63,6 +63,273 @@ static void upf_gtp_handle_multicast(ogs_pkbuf_t *recvbuf);
 static void upf_gtp_handle_tap_ipv6_mcast(
         ogs_pkbuf_t *recvbuf, ogs_pfcp_dev_t *tap_dev);
 
+/*
+ * Returns true when pkbuf contains an ICMPv6 Router Solicitation.
+ * Mirrors check_if_router_solicit() in src/smf/gtp-path.c.
+ */
+static bool _check_router_solicit(ogs_pkbuf_t *pkbuf);
+
+/*
+ * Build a synthetic solicited Neighbor Advertisement for the gateway link-local
+ * address (fe80::1) and deliver it to the UE via its downlink GTP-U tunnel.
+ *
+ * Called when the UE sends an NS to resolve fe80::1 after receiving the
+ * synthetic Router Advertisement.  Rather than forwarding the NS to the real
+ * router (which would respond with a unicast NA that gets broadcast to all UEs),
+ * we reply directly using the gateway MAC already learned from TAP traffic.
+ *
+ * ns_src_ip6  – IPv6 source address of the incoming NS (UE's link-local).
+ *               This becomes the NA destination.
+ * dev         – TAP device; supplies the learned gw6_mac_addr.
+ */
+static void _send_gateway_neighbor_advertisement(
+        upf_sess_t *sess, uint8_t *ns_src_ip6, ogs_pfcp_dev_t *dev)
+{
+    ogs_pfcp_pdr_t *pdr = NULL;
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_user_plane_report_t report;
+    ogs_pkbuf_t *pkbuf = NULL;
+    uint8_t *p;
+    struct ip6_hdr *ip6_h;
+    struct nd_neighbor_advert *na_h;
+    uint16_t plen;
+
+    /*
+     * Gateway link-local: fe80::1  (same address advertised in the
+     * synthetic RA; this is both the NA source and the target field).
+     * Stored as a byte array to avoid endian-dependent uint32_t tricks.
+     */
+    static const uint8_t gw_ll_bytes[16] = {
+        0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01
+    };
+#define GW_LL_BYTES gw_ll_bytes
+
+    /* Layout: IPv6(40) + NA header(24) + TLLA option(8) = 72 bytes */
+    plen = sizeof(struct nd_neighbor_advert) + 8;   /* NA hdr + TLLA opt */
+
+    pkbuf = ogs_pkbuf_alloc(packet_pool,
+                OGS_TUN_MAX_HEADROOM + sizeof(struct ip6_hdr) + plen);
+    ogs_assert(pkbuf);
+    ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+    ogs_pkbuf_put(pkbuf, sizeof(struct ip6_hdr) + plen);
+    memset(pkbuf->data, 0, pkbuf->len);
+
+    p     = (uint8_t *)pkbuf->data;
+    ip6_h = (struct ip6_hdr *)p;
+    na_h  = (struct nd_neighbor_advert *)(p + sizeof *ip6_h);
+
+    /* ICMPv6 Neighbor Advertisement (type=136) */
+    na_h->nd_na_type           = ND_NEIGHBOR_ADVERT;
+    na_h->nd_na_code           = 0;
+    na_h->nd_na_cksum          = 0;      /* filled below */
+    na_h->nd_na_flags_reserved =
+        htobe32(ND_NA_FLAG_SOLICITED | ND_NA_FLAG_OVERRIDE);
+    memcpy(na_h->nd_na_target.s6_addr, GW_LL_BYTES, 16);   /* target=fe80::1 */
+
+    /* Target Link-Layer Address option (type=2, len=1 → 8 bytes) */
+    uint8_t *opt = p + sizeof *ip6_h + sizeof(struct nd_neighbor_advert);
+    opt[0] = ND_OPT_TARGET_LINKADDR;    /* type 2 */
+    opt[1] = 1;                         /* len = 1 × 8 = 8 bytes */
+    memcpy(opt + 2, dev->gw6_mac_addr, ETHER_ADDR_LEN);
+
+    pkbuf->len = sizeof *ip6_h + plen;
+
+    /* ICMPv6 checksum over IPv6 pseudo-header */
+    {
+        uint8_t pseudo[40];
+        uint16_t plen_be = htobe16(plen);
+        memset(pseudo, 0, sizeof pseudo);
+        memcpy(pseudo,      GW_LL_BYTES,  16);  /* src = fe80::1 */
+        memcpy(pseudo + 16, ns_src_ip6,   16);  /* dst = UE link-local */
+        memcpy(pseudo + 32, &plen_be,      2);
+        pseudo[39] = IPPROTO_ICMPV6;
+        uint32_t sum = 0;
+        int i, n;
+        uint16_t *w;
+        w = (uint16_t *)pseudo; n = sizeof(pseudo) / 2;
+        for (i = 0; i < n; i++) sum += w[i];
+        w = (uint16_t *)na_h; n = plen / 2;
+        for (i = 0; i < n; i++) sum += w[i];
+        if (plen & 1) sum += ((uint8_t *)na_h)[plen - 1];
+        while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+        na_h->nd_na_cksum = ~(uint16_t)sum;
+    }
+
+    /* IPv6 header */
+    ip6_h->ip6_flow = htobe32(0x60000000);
+    ip6_h->ip6_plen = htobe16(plen);
+    ip6_h->ip6_nxt  = IPPROTO_ICMPV6;
+    ip6_h->ip6_hlim = 255;
+    memcpy(ip6_h->ip6_src.s6_addr, GW_LL_BYTES, 16);   /* fe80::1 */
+    memcpy(ip6_h->ip6_dst.s6_addr, ns_src_ip6,   16);   /* UE fe80:: */
+
+    /* Deliver via the session's downlink PDR (CORE → ACCESS) */
+    ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
+        far = pdr->far;
+        if (!far) continue;
+        if (pdr->src_if != OGS_PFCP_INTERFACE_CORE) continue;
+        if (far->dst_if != OGS_PFCP_INTERFACE_ACCESS) continue;
+
+        ogs_pkbuf_t *sendbuf = ogs_pkbuf_copy(pkbuf);
+        if (!sendbuf) break;
+
+        ogs_assert(true == ogs_pfcp_up_handle_pdr(
+                    pdr, OGS_GTPU_MSGTYPE_GPDU, 0, NULL, sendbuf, &report));
+        ogs_debug("[UPF-TAP] Sent synthetic NA: fe80::1 → %02x:%02x:%02x:%02x:%02x:%02x",
+                  dev->gw6_mac_addr[0], dev->gw6_mac_addr[1],
+                  dev->gw6_mac_addr[2], dev->gw6_mac_addr[3],
+                  dev->gw6_mac_addr[4], dev->gw6_mac_addr[5]);
+        break;
+    }
+
+    ogs_pkbuf_free(pkbuf);
+#undef GW_LL_BYTES
+}
+
+static bool _check_router_solicit(ogs_pkbuf_t *pkbuf)
+{
+    struct ip *ip_h = (struct ip *)pkbuf->data;
+    if (ip_h->ip_v != 6) return false;
+    if (pkbuf->len < (int)(sizeof(struct ip6_hdr) + sizeof(struct icmp6_hdr)))
+        return false;
+    struct ip6_hdr *ip6_h = (struct ip6_hdr *)pkbuf->data;
+    if (ip6_h->ip6_nxt != IPPROTO_ICMPV6) return false;
+    struct icmp6_hdr *icmp_h =
+        (struct icmp6_hdr *)(pkbuf->data + sizeof(struct ip6_hdr));
+    return icmp_h->icmp6_type == ND_ROUTER_SOLICIT;
+}
+
+/*
+ * Build a synthetic Router Advertisement and deliver it to the UE via the
+ * session's downlink GTP-U tunnel.
+ *
+ * ip6_dst is the IPv6 source address of the incoming RS (the UE's link-local).
+ * The RA is unicast directly back to that address so other UEs on the same
+ * TAP device are not disturbed.
+ *
+ * Mirrors send_router_advertisement() in src/smf/gtp-path.c.
+ */
+static void _send_router_advertisement(upf_sess_t *sess, uint8_t *ip6_dst)
+{
+    ogs_pfcp_pdr_t *pdr = NULL;
+    ogs_pfcp_far_t *far = NULL;
+    ogs_pfcp_user_plane_report_t report;
+    ogs_pkbuf_t *pkbuf = NULL;
+    ogs_pfcp_ue_ip_t *ue_ip = sess->ipv6;
+    uint8_t *p;
+    struct ip6_hdr *ip6_h;
+    struct nd_router_advert *advert_h;
+    struct nd_opt_prefix_info *prefix;
+    uint16_t plen;
+
+    if (!ue_ip || !ue_ip->subnet) return;
+
+    /*
+     * RA source address: fe80::1
+     * Fixed link-local address representing the UPF/gateway on the GTP link.
+     * Mirrors the SMF fallback when no link_local_addr is configured.
+     */
+    uint32_t src6[4] = {
+        htobe32(0xfe800000), htobe32(0x00000000),
+        htobe32(0x00000000), htobe32(0x00000001)
+    };
+
+    pkbuf = ogs_pkbuf_alloc(packet_pool,
+                OGS_TUN_MAX_HEADROOM + sizeof(struct ip6_hdr) + 200);
+    ogs_assert(pkbuf);
+    ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+    ogs_pkbuf_put(pkbuf, sizeof(struct ip6_hdr) + 200);
+    memset(pkbuf->data, 0, pkbuf->len);
+
+    p        = (uint8_t *)pkbuf->data;
+    ip6_h    = (struct ip6_hdr *)p;
+    advert_h = (struct nd_router_advert *)(p + sizeof *ip6_h);
+    prefix   = (struct nd_opt_prefix_info *)
+                    (p + sizeof *ip6_h + sizeof *advert_h);
+
+    /* ICMPv6 Router Advertisement */
+    advert_h->nd_ra_type            = ND_ROUTER_ADVERT;
+    advert_h->nd_ra_code            = 0;
+    advert_h->nd_ra_curhoplimit     = 64;
+    advert_h->nd_ra_flags_reserved  = 0;
+    advert_h->nd_ra_router_lifetime = htobe16(64800);   /* 18 hours */
+    advert_h->nd_ra_reachable       = 0;
+    advert_h->nd_ra_retransmit      = 0;
+
+    /* Prefix Information Option (type=3, len=4 × 8 = 32 bytes) */
+    prefix->nd_opt_pi_type           = ND_OPT_PREFIX_INFORMATION;
+    prefix->nd_opt_pi_len            = 4;
+    prefix->nd_opt_pi_prefix_len     = OGS_IPV6_DEFAULT_PREFIX_LEN;   /* 64 */
+    prefix->nd_opt_pi_flags_reserved =
+        ND_OPT_PI_FLAG_ONLINK | ND_OPT_PI_FLAG_AUTO;
+    prefix->nd_opt_pi_valid_time     = htobe32(0xffffffff);
+    prefix->nd_opt_pi_preferred_time = htobe32(0xffffffff);
+    memcpy(prefix->nd_opt_pi_prefix.s6_addr,
+           ue_ip->addr, OGS_IPV6_DEFAULT_PREFIX_LEN >> 3);  /* /64 */
+
+    plen = sizeof *advert_h + sizeof *prefix;
+    pkbuf->len = sizeof *ip6_h + plen;
+
+    /*
+     * ICMPv6 checksum over the IPv6 pseudo-header:
+     *   src(16) | dst(16) | upper-layer-len(4) | zeros(3) | next-hdr(1)
+     * followed by the ICMPv6 payload.
+     */
+    {
+        uint8_t pseudo[40];
+        uint16_t plen_be = htobe16(plen);
+        memset(pseudo, 0, sizeof pseudo);
+        memcpy(pseudo,      src6,    16);
+        memcpy(pseudo + 16, ip6_dst, 16);
+        memcpy(pseudo + 32, &plen_be, 2);
+        pseudo[39] = IPPROTO_ICMPV6;
+        /* Checksum covers pseudo-header + ICMPv6 payload together */
+        advert_h->nd_ra_cksum = 0;
+        uint32_t sum = 0;
+        uint16_t *w;
+        int i, n;
+        /* pseudo-header */
+        w = (uint16_t *)pseudo; n = sizeof(pseudo) / 2;
+        for (i = 0; i < n; i++) sum += w[i];
+        /* ICMPv6 payload */
+        w = (uint16_t *)advert_h; n = plen / 2;
+        for (i = 0; i < n; i++) sum += w[i];
+        if (plen & 1) sum += ((uint8_t *)advert_h)[plen - 1];
+        while (sum >> 16) sum = (sum & 0xffff) + (sum >> 16);
+        advert_h->nd_ra_cksum = ~(uint16_t)sum;
+    }
+
+    /* IPv6 header */
+    ip6_h->ip6_flow = htobe32(0x60000000);
+    ip6_h->ip6_plen = htobe16(plen);
+    ip6_h->ip6_nxt  = IPPROTO_ICMPV6;
+    ip6_h->ip6_hlim = 255;
+    memcpy(ip6_h->ip6_src.s6_addr, src6,    16);
+    memcpy(ip6_h->ip6_dst.s6_addr, ip6_dst, 16);
+
+    /*
+     * Deliver via the session's downlink PDR (CORE → ACCESS).
+     * ogs_pfcp_up_handle_pdr() encapsulates in GTP-U and sends to the eNB.
+     */
+    ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
+        far = pdr->far;
+        if (!far) continue;
+        if (pdr->src_if != OGS_PFCP_INTERFACE_CORE) continue;
+        if (far->dst_if != OGS_PFCP_INTERFACE_ACCESS) continue;
+
+        ogs_pkbuf_t *sendbuf = ogs_pkbuf_copy(pkbuf);
+        if (!sendbuf) break;
+
+        ogs_assert(true == ogs_pfcp_up_handle_pdr(
+                    pdr, OGS_GTPU_MSGTYPE_GPDU, 0, NULL, sendbuf, &report));
+        ogs_debug("[UPF-TAP] Sent synthetic Router Advertisement to UE");
+        break;
+    }
+
+    ogs_pkbuf_free(pkbuf);
+}
+
 void upf_gtp_announce_subscriber(upf_sess_t *sess)
 {
     ogs_pfcp_subnet_t *subnet = NULL;
@@ -752,33 +1019,26 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
          * the uplink src/dst swap the rule becomes (src=any, dst=ff02::2,
          * proto=58), which matches the RS perfectly.
          *
-         * When the up2cp_far sends the RS to the SMF CP-function GTP-U
-         * endpoint (with TEID=sess->index) and that endpoint shares an IP
-         * with SGWU, SGWU receives the packet, cannot find TEID=sess->index
-         * in its table, and replies with an Error Indication.
+         * Forwarding the RS to the real router creates two problems:
+         *  1. If the router sends a solicited RA unicast to the UE's fe80::
+         *     link-local, upf_gtp_handle_tap_ipv6_mcast() broadcasts it to
+         *     every IPv6 UE on the TAP instead of only the requesting UE.
+         *  2. The UPF already knows the UE's /64 prefix, so there is no need
+         *     to involve the real router at all.
          *
-         * In TAP mode the real router on the N6 interface must answer the
-         * RS.  If the selected FAR would route to the CP-function but the
-         * session is backed by a TAP device, fall back to the ordinary UL
-         * (N6) PDR/FAR so the RS reaches the TAP.
+         * Instead, generate a synthetic RA directly and deliver it to the UE
+         * via its downlink GTP-U tunnel.  This mirrors the SMF behaviour in
+         * non-TAP mode (send_router_advertisement() in smf/gtp-path.c).
          */
         if (far->dst_if == OGS_PFCP_INTERFACE_CP_FUNCTION) {
             ogs_pfcp_subnet_t *tap_sub =
                 (sess->ipv6 && sess->ipv6->subnet) ? sess->ipv6->subnet :
                 (sess->ipv4 && sess->ipv4->subnet) ? sess->ipv4->subnet : NULL;
-            if (tap_sub && tap_sub->dev && tap_sub->dev->is_tap) {
-                ogs_pfcp_pdr_t *alt_pdr = NULL;
-                ogs_list_for_each(&pdr->sess->pdr_list, alt_pdr) {
-                    ogs_pfcp_far_t *alt_far = alt_pdr->far;
-                    if (!alt_far) continue;
-                    if (alt_far->dst_if != OGS_PFCP_INTERFACE_CORE) continue;
-                    if (!alt_far->dst_if_type_presence) continue;
-                    if (alt_far->dst_if_type !=
-                            OGS_PFCP_3GPP_INTERFACE_TYPE_N6) continue;
-                    pdr = alt_pdr;
-                    far = alt_far;
-                    break;
-                }
+            if (tap_sub && tap_sub->dev && tap_sub->dev->is_tap &&
+                    sess->ipv6 && _check_router_solicit(pkbuf)) {
+                struct ip6_hdr *ip6_h = (struct ip6_hdr *)pkbuf->data;
+                _send_router_advertisement(sess, ip6_h->ip6_src.s6_addr);
+                goto cleanup;
             }
         }
 
@@ -1094,6 +1354,55 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
                 /* No matching downlink PDR - fall through to TUN */
             }
 
+            /*
+             * TAP mode: intercept Neighbor Solicitations from the UE that
+             * are trying to resolve the gateway link-local address (fe80::1)
+             * advertised in our synthetic Router Advertisement.
+             *
+             * Without interception the NS reaches the real router via the TAP;
+             * the router replies with a unicast NA to the UE's fe80:: address,
+             * which upf_gtp_handle_tap_ipv6_mcast() then broadcasts to every
+             * IPv6 UE on the TAP.  Instead we reply here directly, using the
+             * gw6_mac_addr we already learned from the TAP, so only the
+             * requesting UE gets the NA.
+             *
+             * We only intercept when gw6_mac_addr is known; if it is not yet
+             * learned we fall through and let the real router answer normally.
+             */
+            if (dev && dev->is_tap && ip_h->ip_v == 6 &&
+                    pkbuf->len >= (int)(sizeof(struct ip6_hdr) +
+                                       sizeof(struct nd_neighbor_solicit))) {
+                struct ip6_hdr *ip6_ns =
+                    (struct ip6_hdr *)pkbuf->data;
+                if (ip6_ns->ip6_nxt == IPPROTO_ICMPV6) {
+                    struct nd_neighbor_solicit *ns_h =
+                        (struct nd_neighbor_solicit *)
+                        (pkbuf->data + sizeof(struct ip6_hdr));
+                    if (ns_h->nd_ns_type == ND_NEIGHBOR_SOLICIT) {
+                        /*
+                         * Check target = fe80::1.
+                         * The address is stored big-endian in s6_addr[].
+                         * fe80::1 = { 0xfe,0x80, 14×0x00, 0x01 }.
+                         */
+                        static const uint8_t gw_ll_target[16] = {
+                            0xfe,0x80, 0,0, 0,0, 0,0,
+                            0,0, 0,0, 0,0, 0,0x01
+                        };
+                        static const uint8_t zero_mac6[ETHER_ADDR_LEN] = {0};
+                        if (memcmp(ns_h->nd_ns_target.s6_addr,
+                                   gw_ll_target, 16) == 0 &&
+                                memcmp(dev->gw6_mac_addr,
+                                       zero_mac6, ETHER_ADDR_LEN) != 0) {
+                            _send_gateway_neighbor_advertisement(
+                                    sess,
+                                    ip6_ns->ip6_src.s6_addr,
+                                    dev);
+                            goto cleanup;
+                        }
+                    }
+                }
+            }
+
             if (dev->is_tap) {
                 /*
                  * UE uplink frames forwarded to the gateway via TAP:
@@ -1111,15 +1420,42 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
                             ETHER_ADDR_LEN) != 0) ?
                     sess->imeisv_mac_addr : proxy_mac_addr;
                 /*
-                 * IPv4 and IPv6 gateways may be different devices and
-                 * therefore have different MACs.  Select the appropriate
-                 * learned MAC; fall back to broadcast if not yet known.
+                 * Select the Ethernet destination MAC:
+                 *
+                 * For IPv6 multicast destinations (e.g. RS to ff02::2,
+                 * NS to ff02::1:ffXX:XXXX) the Ethernet dst is the
+                 * derived multicast MAC 33:33:<last-4-bytes> per RFC 2464.
+                 * Using the gateway unicast MAC for these frames is
+                 * non-standard and breaks on shared Ethernet segments.
+                 *
+                 * For unicast IPv6 and all IPv4, use the learned gateway
+                 * MAC; fall back to broadcast until the MAC is known.
                  */
-                const uint8_t *gw_mac = (eth_type == ETHERTYPE_IPV6) ?
-                    dev->gw6_mac_addr : dev->gw_mac_addr;
-                const uint8_t *dst_mac =
-                    (memcmp(gw_mac, zero_mac, ETHER_ADDR_LEN) != 0) ?
-                    gw_mac : broadcast_mac;
+                uint8_t mcast_mac[ETHER_ADDR_LEN];
+                const uint8_t *dst_mac;
+                if (eth_type == ETHERTYPE_IPV6 &&
+                        pkbuf->len >= (int)sizeof(struct ip6_hdr)) {
+                    struct ip6_hdr *ip6up = (struct ip6_hdr *)pkbuf->data;
+                    if (IN6_IS_ADDR_MULTICAST(&ip6up->ip6_dst)) {
+                        mcast_mac[0] = 0x33;
+                        mcast_mac[1] = 0x33;
+                        mcast_mac[2] = ip6up->ip6_dst.s6_addr[12];
+                        mcast_mac[3] = ip6up->ip6_dst.s6_addr[13];
+                        mcast_mac[4] = ip6up->ip6_dst.s6_addr[14];
+                        mcast_mac[5] = ip6up->ip6_dst.s6_addr[15];
+                        dst_mac = mcast_mac;
+                    } else {
+                        const uint8_t *gw_mac = dev->gw6_mac_addr;
+                        dst_mac = (memcmp(gw_mac, zero_mac,
+                                          ETHER_ADDR_LEN) != 0) ?
+                                  gw_mac : broadcast_mac;
+                    }
+                } else {
+                    const uint8_t *gw_mac = dev->gw_mac_addr;
+                    dst_mac = (memcmp(gw_mac, zero_mac,
+                                      ETHER_ADDR_LEN) != 0) ?
+                              gw_mac : broadcast_mac;
+                }
                 if (!eth_type) {
                     ogs_error("[DROP] eth_type is 0 on TAP uplink path");
                     goto cleanup;
