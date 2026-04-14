@@ -60,6 +60,8 @@ const uint8_t proxy_mac_addr[] = { 0x0e, 0x00, 0x00, 0x00, 0x00, 0x01 };
 static ogs_pkbuf_pool_t *packet_pool = NULL;
 
 static void upf_gtp_handle_multicast(ogs_pkbuf_t *recvbuf);
+static void upf_gtp_handle_tap_ipv6_mcast(
+        ogs_pkbuf_t *recvbuf, ogs_pfcp_dev_t *tap_dev);
 
 void upf_gtp_announce_subscriber(upf_sess_t *sess)
 {
@@ -207,6 +209,7 @@ static void _gtpv1_tun_recv_common_cb(
     ogs_pfcp_pdr_t *fallback_pdr = NULL;
     ogs_pfcp_far_t *far = NULL;
     ogs_pfcp_user_plane_report_t report;
+    ogs_pfcp_dev_t *tap_dev = NULL;
     int i;
 
     recvbuf = ogs_tun_read(fd, packet_pool);
@@ -219,7 +222,6 @@ static void _gtpv1_tun_recv_common_cb(
         ogs_pkbuf_t *replybuf = NULL;
         uint16_t eth_type = _get_eth_type(recvbuf->data, recvbuf->len);
         uint8_t size;
-        ogs_pfcp_dev_t *tap_dev = NULL;
         ogs_list_for_each(&ogs_pfcp_self()->dev_list, tap_dev) {
             if (tap_dev->fd == fd) break;
         }
@@ -350,11 +352,57 @@ static void _gtpv1_tun_recv_common_cb(
             goto cleanup;
         }
         ogs_pkbuf_pull(recvbuf, ETHER_HDR_LEN);
+
+        /*
+         * In TAP mode, Router Advertisements (and other IPv6 multicast
+         * control traffic from the upstream router) arrive with a destination
+         * of ff02::1 (all-nodes) or the UE's link-local address — neither of
+         * which is in the per-session IPv6 hash (keyed by global /64 prefix).
+         * Handle these before the normal session lookup:
+         *   - Multicast dst  → deliver to every IPv6 UE on this TAP device.
+         *   - Link-local dst → find the UE by matching the lower-64-bit IID.
+         */
+        if (tap_dev) {
+            struct ip *ip_h_chk = (struct ip *)recvbuf->data;
+            if (ip_h_chk->ip_v == 6 &&
+                    recvbuf->len >= sizeof(struct ip6_hdr)) {
+                struct ip6_hdr *ip6_h_chk =
+                        (struct ip6_hdr *)recvbuf->data;
+                struct in6_addr ip6_dst;
+                memcpy(&ip6_dst, &ip6_h_chk->ip6_dst, sizeof(ip6_dst));
+
+                if (IN6_IS_ADDR_MULTICAST(&ip6_dst)) {
+                    /* e.g. Router Advertisement to ff02::1 */
+                    upf_gtp_handle_tap_ipv6_mcast(recvbuf, tap_dev);
+                    goto cleanup;
+                } else if (IN6_IS_ADDR_LINKLOCAL(&ip6_dst)) {
+                    /* Solicited RA sent directly to the UE's link-local;
+                     * match by the interface identifier (lower 64 bits). */
+                    uint32_t *dst6 =
+                            (uint32_t *)ip6_h_chk->ip6_dst.s6_addr;
+                    upf_sess_t *scan = NULL;
+                    ogs_list_for_each(&upf_self()->sess_list, scan) {
+                        if (!scan->ipv6 || !scan->ipv6->subnet) continue;
+                        if (scan->ipv6->subnet->dev != tap_dev) continue;
+                        if (scan->ipv6->addr[2] == dst6[2] &&
+                                scan->ipv6->addr[3] == dst6[3]) {
+                            sess = scan;
+                            break;
+                        }
+                    }
+                    if (!sess)
+                        goto cleanup;
+                    /* sess found by IID; skip the normal hash lookup below */
+                }
+            }
+        }
     }
 
-    sess = upf_sess_find_by_ue_ip_address(recvbuf);
-    if (!sess)
-        goto cleanup;
+    if (!sess) {
+        sess = upf_sess_find_by_ue_ip_address(recvbuf);
+        if (!sess)
+            goto cleanup;
+    }
 
     ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
         far = pdr->far;
@@ -845,12 +893,13 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
      *  - If the IP source address is the unspecified address, there is no
      *    source link-layer address option in the message.
      */
-                if (IN6_IS_ADDR_LINKLOCAL((struct in6_addr *)src_addr) &&
-                    src_addr[2] == sess->ipv6->addr[2] &&
-                    src_addr[3] == sess->ipv6->addr[3]) {
+                if (IN6_IS_ADDR_LINKLOCAL((struct in6_addr *)src_addr)) {
                     /*
-                     * if Link-local address,
-                     * Interface Identifier should be matched
+                     * Link-local source (e.g. Router Solicitation fe80::<IID>):
+                     * allow any link-local.  The GTP TEID already authenticates
+                     * which UE sent this packet; the IID match is not required
+                     * because the UE may derive its own IID rather than using
+                     * the network-assigned one from the PDN context.
                      */
                 } else if (src_addr[0] == sess->ipv6->addr[0] &&
                             src_addr[1] == sess->ipv6->addr[1]) {
@@ -1456,6 +1505,39 @@ static void upf_gtp_handle_multicast(ogs_pkbuf_t *recvbuf)
 
                     return;
                 }
+            }
+        }
+    }
+}
+
+/*
+ * Deliver an IPv6 multicast packet received from the TAP (e.g. a Router
+ * Advertisement to ff02::1) to every IPv6 UE session homed on that TAP device.
+ *
+ * upf_sess_find_by_ue_ip_address() cannot be used for these packets because
+ * it looks up sessions by their global /64 prefix, and multicast or link-local
+ * destination addresses never match.
+ */
+static void upf_gtp_handle_tap_ipv6_mcast(
+        ogs_pkbuf_t *recvbuf, ogs_pfcp_dev_t *tap_dev)
+{
+    upf_sess_t *sess = NULL;
+    ogs_pfcp_pdr_t *pdr = NULL;
+    ogs_pfcp_user_plane_report_t report;
+
+    ogs_list_for_each(&upf_self()->sess_list, sess) {
+        if (!sess->ipv6) continue;
+        if (!sess->ipv6->subnet) continue;
+        if (sess->ipv6->subnet->dev != tap_dev) continue;
+
+        ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
+            if (pdr->src_if == OGS_PFCP_INTERFACE_CORE) {
+                ogs_pkbuf_t *sendbuf = ogs_pkbuf_copy(recvbuf);
+                if (!sendbuf) continue;
+                ogs_assert(true == ogs_pfcp_up_handle_pdr(
+                    pdr, OGS_GTPU_MSGTYPE_GPDU, 0,
+                    NULL, sendbuf, &report));
+                break;
             }
         }
     }
