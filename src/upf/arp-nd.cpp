@@ -267,12 +267,25 @@ uint8_t nd_reply(uint8_t *reply_data, uint8_t *request_data, uint len,
     if (_parse_nd(pdu)) {
         HWAddress<ETHER_ADDR_LEN> source_mac(mac);
         const ICMPv6& icmp6 = pdu.rfind_pdu<ICMPv6>();
-        EthernetII reply(pdu.src_addr(), pdu.dst_addr());
-        ICMPv6 nd_reply(ICMPv6::NEIGHBOUR_ADVERT);
-        nd_reply.target_link_layer_addr(source_mac);
-        nd_reply.target_addr(icmp6.target_addr());
-        nd_reply.override(true);
-        reply /= nd_reply;
+        const IPv6& ip6_req = pdu.rfind_pdu<IPv6>();
+
+        IPv6Address target = icmp6.target_addr();
+        IPv6Address requester_ip = ip6_req.src_addr();
+
+        ICMPv6 na(ICMPv6::NEIGHBOUR_ADVERT);
+        na.target_link_layer_addr(source_mac);
+        na.target_addr(target);
+        na.solicited(true);
+        na.override(true);
+
+        /* IPv6(dst, src): reply goes back to the NS sender */
+        IPv6 ip6_reply(requester_ip, target);
+        ip6_reply.hop_limit(255);
+
+        /* EthernetII(dst, src): unicast back to requester, source is the
+         * MAC being advertised (not the multicast dst of the incoming NS) */
+        EthernetII reply(pdu.src_addr(), source_mac);
+        reply /= ip6_reply / na;
         return _serialize_reply(reply_data, reply);
     }
     return 0;
