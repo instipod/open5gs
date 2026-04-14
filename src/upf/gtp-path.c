@@ -376,23 +376,14 @@ static void _gtpv1_tun_recv_common_cb(
                     upf_gtp_handle_tap_ipv6_mcast(recvbuf, tap_dev);
                     goto cleanup;
                 } else if (IN6_IS_ADDR_LINKLOCAL(&ip6_dst)) {
-                    /* Solicited RA sent directly to the UE's link-local;
-                     * match by the interface identifier (lower 64 bits). */
-                    uint32_t *dst6 =
-                            (uint32_t *)ip6_h_chk->ip6_dst.s6_addr;
-                    upf_sess_t *scan = NULL;
-                    ogs_list_for_each(&upf_self()->sess_list, scan) {
-                        if (!scan->ipv6 || !scan->ipv6->subnet) continue;
-                        if (scan->ipv6->subnet->dev != tap_dev) continue;
-                        if (scan->ipv6->addr[2] == dst6[2] &&
-                                scan->ipv6->addr[3] == dst6[3]) {
-                            sess = scan;
-                            break;
-                        }
-                    }
-                    if (!sess)
-                        goto cleanup;
-                    /* sess found by IID; skip the normal hash lookup below */
+                    /* Link-local unicast (e.g. solicited RA to UE's
+                     * fe80:: address).  IID-based matching is unreliable:
+                     * the UE derives its own link-local IID from EUI-64/MAC,
+                     * not from the network-assigned global address stored in
+                     * sess->ipv6->addr[2:3].  Deliver to all IPv6 sessions
+                     * on this TAP device instead. */
+                    upf_gtp_handle_tap_ipv6_mcast(recvbuf, tap_dev);
+                    goto cleanup;
                 }
             }
         }
