@@ -745,6 +745,44 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
         ogs_assert(far);
 
         /*
+         * In TAP mode the up2cp PDR (precedence=255) steals Router
+         * Solicitations before the ul_pdr (precedence=65535) can match them.
+         * This happens because the SDF filter "permit out 58 from
+         * ff02::2/128 to assigned" compiles "assigned" → "any", and after
+         * the uplink src/dst swap the rule becomes (src=any, dst=ff02::2,
+         * proto=58), which matches the RS perfectly.
+         *
+         * When the up2cp_far sends the RS to the SMF CP-function GTP-U
+         * endpoint (with TEID=sess->index) and that endpoint shares an IP
+         * with SGWU, SGWU receives the packet, cannot find TEID=sess->index
+         * in its table, and replies with an Error Indication.
+         *
+         * In TAP mode the real router on the N6 interface must answer the
+         * RS.  If the selected FAR would route to the CP-function but the
+         * session is backed by a TAP device, fall back to the ordinary UL
+         * (N6) PDR/FAR so the RS reaches the TAP.
+         */
+        if (far->dst_if == OGS_PFCP_INTERFACE_CP_FUNCTION) {
+            ogs_pfcp_subnet_t *tap_sub =
+                (sess->ipv6 && sess->ipv6->subnet) ? sess->ipv6->subnet :
+                (sess->ipv4 && sess->ipv4->subnet) ? sess->ipv4->subnet : NULL;
+            if (tap_sub && tap_sub->dev && tap_sub->dev->is_tap) {
+                ogs_pfcp_pdr_t *alt_pdr = NULL;
+                ogs_list_for_each(&pdr->sess->pdr_list, alt_pdr) {
+                    ogs_pfcp_far_t *alt_far = alt_pdr->far;
+                    if (!alt_far) continue;
+                    if (alt_far->dst_if != OGS_PFCP_INTERFACE_CORE) continue;
+                    if (!alt_far->dst_if_type_presence) continue;
+                    if (alt_far->dst_if_type !=
+                            OGS_PFCP_3GPP_INTERFACE_TYPE_N6) continue;
+                    pdr = alt_pdr;
+                    far = alt_far;
+                    break;
+                }
+            }
+        }
+
+        /*
          * From Issue #1354
          *
          * Do not check Router Advertisement
