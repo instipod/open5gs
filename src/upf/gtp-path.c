@@ -520,8 +520,69 @@ static void _gtpv1_tun_recv_common_cb(
                             src_mac[3], src_mac[4], src_mac[5]);
                     }
                 } else if (eth_type == ETHERTYPE_IPV6) {
-                    if (memcmp(tap_dev->gw6_mac_addr,
-                            src_mac, ETHER_ADDR_LEN) != 0) {
+                    /*
+                     * Only trust ICMPv6 ND messages as authoritative
+                     * sources for the gateway MAC.  Learning from
+                     * arbitrary IPv6 traffic causes the wrong MAC to be
+                     * recorded transiently at startup when frames from
+                     * other on-link hosts arrive before the first RA or
+                     * NA from the actual router.
+                     *
+                     *  - Router Advertisement (type 134): always sent
+                     *    by a router; its source MAC is the router MAC.
+                     *  - Neighbor Advertisement (type 136): accept only
+                     *    when the NA target address matches a configured
+                     *    IPv6 gateway on this TAP device, so we learn
+                     *    from solicited NA replies to our NS probes and
+                     *    not from unsolicited NAs sent by other hosts.
+                     */
+                    bool learn_ipv6_mac = false;
+                    if (recvbuf->len >= (int)(ETHER_HDR_LEN +
+                            sizeof(struct ip6_hdr) +
+                            sizeof(struct icmp6_hdr))) {
+                        const struct ip6_hdr *ip6_lrn =
+                            (const struct ip6_hdr *)
+                            ((const uint8_t *)recvbuf->data +
+                             ETHER_HDR_LEN);
+                        if (ip6_lrn->ip6_nxt == IPPROTO_ICMPV6) {
+                            const struct icmp6_hdr *icmp6_lrn =
+                                (const struct icmp6_hdr *)
+                                ((const uint8_t *)recvbuf->data +
+                                 ETHER_HDR_LEN + sizeof(*ip6_lrn));
+                            if (icmp6_lrn->icmp6_type ==
+                                    ND_ROUTER_ADVERT) {
+                                learn_ipv6_mac = true;
+                            } else if (icmp6_lrn->icmp6_type ==
+                                    ND_NEIGHBOR_ADVERT &&
+                                    recvbuf->len >= (int)(
+                                    ETHER_HDR_LEN +
+                                    sizeof(struct ip6_hdr) +
+                                    sizeof(struct nd_neighbor_advert)))
+                            {
+                                const struct nd_neighbor_advert *na =
+                                    (const struct nd_neighbor_advert *)
+                                    icmp6_lrn;
+                                ogs_pfcp_subnet_t *sn = NULL;
+                                ogs_list_for_each(
+                                        &ogs_pfcp_self()->subnet_list,
+                                        sn) {
+                                    if (sn->dev != tap_dev ||
+                                            sn->family != AF_INET6 ||
+                                            !sn->gw.family)
+                                        continue;
+                                    if (memcmp(
+                                            na->nd_na_target.s6_addr,
+                                            sn->gw.sub, 16) == 0) {
+                                        learn_ipv6_mac = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (learn_ipv6_mac &&
+                            memcmp(tap_dev->gw6_mac_addr,
+                                    src_mac, ETHER_ADDR_LEN) != 0) {
                         memcpy(tap_dev->gw6_mac_addr,
                                 src_mac, ETHER_ADDR_LEN);
                         ogs_info("[%s] learned IPv6 gateway MAC "
