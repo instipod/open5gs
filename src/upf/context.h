@@ -47,8 +47,22 @@ extern int __upf_log_domain;
 
 struct upf_route_trie_node;
 
+/* One entry from the IMEI-TAC → MAC-prefix CSV file.
+ * imei_prefix: first 4 BCD bytes of the IMEISV (= IMEI TAC, first 8 decimal
+ *              digits, packed as per 3GPP semi-octet encoding:
+ *              low nibble = even-indexed digit).
+ * mac_prefix:  three bytes to use as MAC[0..2] instead of the static 02:00:00. */
+typedef struct upf_imei_mac_map_s {
+    uint8_t imei_prefix[4];
+    uint8_t mac_prefix[3];
+} upf_imei_mac_map_t;
+
 typedef struct upf_context_s {
     bool        ue_to_ue_hairpin;   /* hairpin UE-to-UE traffic at UPF (default: true) */
+
+    /* IMEI-prefix → MAC-prefix mapping loaded from CSV at startup */
+    upf_imei_mac_map_t *imei_mac_map;
+    int                 imei_mac_map_count;
 
     ogs_hash_t *upf_n4_seid_hash;   /* hash table (UPF-N4-SEID) */
     ogs_hash_t *smf_n4_seid_hash;   /* hash table (SMF-N4-SEID) */
@@ -123,6 +137,11 @@ typedef struct upf_sess_s {
     char            *gx_sid;            /* Gx Session ID */
     ogs_pfcp_node_t *pfcp_node;
 
+    /* Subscriber device identity */
+    uint8_t         imeisv[OGS_MAX_IMEISV_LEN];
+    uint8_t         imeisv_len;
+    uint8_t         imeisv_mac_addr[6]; /* Per-device MAC: TAC prefix + IMEISV serial bytes */
+
     /* Accounting: */
     upf_sess_urr_acc_t urr_acc[OGS_MAX_NUM_OF_URR]; /* FIXME: This probably needs to be mved to a hashtable or alike */
     char            *apn_dnn;            /* APN/DNN Item */
@@ -133,6 +152,13 @@ void upf_context_final(void);
 upf_context_t *upf_self(void);
 
 int upf_context_parse_config(void);
+
+/* Look up the 3-byte MAC prefix by matching the first 4 BCD bytes of the
+ * IMEISV (= first 8 digits = IMEI TAC) against the loaded CSV table.
+ * Fills mac_prefix[3] with the matched entry's prefix, or the static
+ * fallback {0x02, 0x00, 0x00} if no entry matches or imeisv_len < 4. */
+void upf_lookup_mac_prefix_by_imei(const uint8_t *imeisv, uint8_t imeisv_len,
+                                    uint8_t mac_prefix[3]);
 
 upf_sess_t *upf_sess_add_by_message(ogs_pfcp_message_t *message);
 

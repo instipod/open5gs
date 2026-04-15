@@ -27,11 +27,15 @@
 extern "C" {
 #endif
 
+typedef struct upf_sess_s upf_sess_t;
+
 int upf_gtp_init(void);
 void upf_gtp_final(void);
 
 int upf_gtp_open(void);
 void upf_gtp_close(void);
+
+void upf_gtp_announce_subscriber(upf_sess_t *sess);
 
 #ifdef __cplusplus
 }

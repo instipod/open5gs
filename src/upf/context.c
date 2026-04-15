@@ -17,6 +17,10 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+#include <errno.h>
+#include <stdio.h>
+#include <string.h>
+
 #include "context.h"
 #include "pfcp-path.h"
 
@@ -96,6 +100,12 @@ void upf_context_final(void)
     free_upf_route_trie_node(self.ipv4_framed_routes);
     free_upf_route_trie_node(self.ipv6_framed_routes);
 
+    if (self.imei_mac_map) {
+        ogs_free(self.imei_mac_map);
+        self.imei_mac_map = NULL;
+        self.imei_mac_map_count = 0;
+    }
+
     ogs_pool_final(&upf_sess_pool);
     ogs_pool_final(&upf_n4_seid_pool);
 
@@ -105,6 +115,155 @@ void upf_context_final(void)
 upf_context_t *upf_self(void)
 {
     return &self;
+}
+
+/*
+ * Parse a MAC prefix string of the form "XX:XX:XX" (hex, colon-separated)
+ * into three bytes.  Returns true on success.
+ */
+static bool parse_mac_prefix(const char *s, uint8_t out[3])
+{
+    unsigned int b0, b1, b2;
+    if (sscanf(s, "%02x:%02x:%02x", &b0, &b1, &b2) != 3)
+        return false;
+    if (b0 > 0xff || b1 > 0xff || b2 > 0xff)
+        return false;
+    out[0] = (uint8_t)b0;
+    out[1] = (uint8_t)b1;
+    out[2] = (uint8_t)b2;
+    return true;
+}
+
+/*
+ * Convert an 8-digit decimal IMEI prefix string to 4 BCD bytes using the
+ * 3GPP semi-octet encoding (low nibble = digit at even index).
+ * Returns true on success.
+ */
+static bool parse_imei_prefix(const char *s, uint8_t out[4])
+{
+    int i;
+    if (strlen(s) != 8)
+        return false;
+    for (i = 0; i < 8; i++) {
+        if (s[i] < '0' || s[i] > '9')
+            return false;
+    }
+    for (i = 0; i < 4; i++) {
+        uint8_t lo = (uint8_t)(s[2 * i]     - '0');
+        uint8_t hi = (uint8_t)(s[2 * i + 1] - '0');
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+/*
+ * Load the IMEI-TAC → MAC-prefix CSV file.
+ * Expected format per line (comments with '#' and blank lines are skipped):
+ *   IMEIPREFIX,XX:XX:XX
+ * where IMEIPREFIX is exactly 8 decimal digits (IMEI TAC, first 8 digits)
+ * and XX:XX:XX is the 3-byte MAC prefix in hex with colon separators.
+ */
+static void upf_load_imei_mac_csv(const char *path)
+{
+    FILE *f;
+    char line[256];
+    int capacity = 0;
+    int count = 0;
+    upf_imei_mac_map_t *map = NULL;
+
+    f = fopen(path, "r");
+    if (!f) {
+        ogs_error("Cannot open IMEI-MAC CSV file '%s': %s",
+                  path, strerror(errno));
+        return;
+    }
+
+    while (fgets(line, sizeof(line), f)) {
+        char *p = line;
+        char *imei_str, *mac_str, *comma;
+        upf_imei_mac_map_t entry;
+
+        /* strip trailing newline/whitespace */
+        size_t len = strlen(line);
+        while (len > 0 && (line[len-1] == '\n' || line[len-1] == '\r' ||
+                            line[len-1] == ' '  || line[len-1] == '\t'))
+            line[--len] = '\0';
+
+        /* skip blank lines and comments */
+        while (*p == ' ' || *p == '\t') p++;
+        if (*p == '\0' || *p == '#')
+            continue;
+
+        comma = strchr(p, ',');
+        if (!comma) {
+            ogs_warn("IMEI-MAC CSV: skipping malformed line: %s", p);
+            continue;
+        }
+        *comma = '\0';
+        imei_str = p;
+        mac_str  = comma + 1;
+
+        /* trim whitespace around tokens */
+        while (*mac_str == ' ' || *mac_str == '\t') mac_str++;
+
+        if (!parse_imei_prefix(imei_str, entry.imei_prefix)) {
+            ogs_warn("IMEI-MAC CSV: invalid IMEI prefix '%s', skipping",
+                     imei_str);
+            continue;
+        }
+        if (!parse_mac_prefix(mac_str, entry.mac_prefix)) {
+            ogs_warn("IMEI-MAC CSV: invalid MAC prefix '%s', skipping",
+                     mac_str);
+            continue;
+        }
+
+        /* grow the array if needed */
+        if (count >= capacity) {
+            int new_cap = (capacity == 0) ? 16 : capacity * 2;
+            upf_imei_mac_map_t *tmp = ogs_realloc(map,
+                    (size_t)new_cap * sizeof(*map));
+            if (!tmp) {
+                ogs_error("IMEI-MAC CSV: out of memory");
+                break;
+            }
+            map = tmp;
+            capacity = new_cap;
+        }
+        map[count++] = entry;
+
+        ogs_debug("IMEI-MAC CSV: loaded IMEI TAC %s → MAC prefix "
+                 "%02x:%02x:%02x",
+                 imei_str,
+                 entry.mac_prefix[0], entry.mac_prefix[1],
+                 entry.mac_prefix[2]);
+    }
+
+    fclose(f);
+
+    if (self.imei_mac_map)
+        ogs_free(self.imei_mac_map);
+    self.imei_mac_map = map;
+    self.imei_mac_map_count = count;
+
+    ogs_info("IMEI-MAC CSV: loaded %d entries from '%s'", count, path);
+}
+
+void upf_lookup_mac_prefix_by_imei(const uint8_t *imeisv, uint8_t imeisv_len,
+                                    uint8_t mac_prefix[3])
+{
+    static const uint8_t default_prefix[3] = { 0x02, 0x00, 0x00 };
+    int i;
+
+    if (self.imei_mac_map && imeisv_len >= 4) {
+        for (i = 0; i < self.imei_mac_map_count; i++) {
+            if (memcmp(imeisv, self.imei_mac_map[i].imei_prefix, 4) == 0) {
+                memcpy(mac_prefix, self.imei_mac_map[i].mac_prefix, 3);
+                return;
+            }
+        }
+    }
+
+    memcpy(mac_prefix, default_prefix, 3);
 }
 
 static int upf_context_prepare(void)
@@ -171,6 +330,10 @@ int upf_context_parse_config(void)
                             ogs_warn("unknown value `%s` for ue_to_ue_hairpin"
                                      " (use true/false)", v);
                     }
+                } else if (!strcmp(upf_key, "imei_mac_csv")) {
+                    const char *v = ogs_yaml_iter_value(&upf_iter);
+                    if (v)
+                        upf_load_imei_mac_csv(v);
                 } else
                     ogs_warn("unknown key `%s`", upf_key);
             }
@@ -508,11 +671,15 @@ uint8_t upf_sess_set_ue_ip(upf_sess_t *sess,
     }
 
     ogs_info("UE F-SEID[UP:0x%lx CP:0x%lx] "
-             "APN[%s] PDN-Type[%d] IPv4[%s] IPv6[%s]",
+             "APN[%s] PDN-Type[%d] IPv4[%s] IPv6[%s] "
+             "MAC[%02x:%02x:%02x:%02x:%02x:%02x]",
         (long)sess->upf_n4_seid, (long)sess->smf_n4_f_seid.seid,
         pdr->dnn, session_type,
         sess->ipv4 ? OGS_INET_NTOP(&sess->ipv4->addr, buf1) : "",
-        sess->ipv6 ? OGS_INET6_NTOP(&sess->ipv6->addr, buf2) : "");
+        sess->ipv6 ? OGS_INET6_NTOP(&sess->ipv6->addr, buf2) : "",
+        sess->imeisv_mac_addr[0], sess->imeisv_mac_addr[1],
+        sess->imeisv_mac_addr[2], sess->imeisv_mac_addr[3],
+        sess->imeisv_mac_addr[4], sess->imeisv_mac_addr[5]);
 
     return cause_value;
 }

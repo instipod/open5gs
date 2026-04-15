@@ -120,6 +120,62 @@ void upf_n4_handle_session_establishment_request(
         ogs_assert(sess->apn_dnn);
     }
 
+    if (req->user_id.presence && req->user_id.len >= 1) {
+        /*
+         * Parse User ID IE (TS 29.244 8.2.101).
+         * Wire format: flags(1) [imsi_len(1) imsi(n)] [imeisv_len(1) imeisv(n)] ...
+         *   IMSIF  = bit 0 (0x01): IMSI field present (skipped — not used for MAC)
+         *   IMEIF  = bit 1 (0x02): IMEISV field present
+         */
+        uint8_t *ptr = (uint8_t *)req->user_id.data;
+        int remaining = req->user_id.len;
+        uint8_t uid_flags = *ptr++;
+        remaining--;
+
+        /* Skip IMSI field if present (IMSIF = bit 0) */
+        if ((uid_flags & 0x01) && remaining >= 1) {
+            uint8_t imsi_len = *ptr++;
+            remaining--;
+            if (remaining >= imsi_len) {
+                ptr += imsi_len;
+                remaining -= imsi_len;
+            }
+        }
+
+        /* Parse IMEISV if present (IMEIF = bit 1) */
+        if ((uid_flags & 0x02) && remaining >= 1) {
+            uint8_t len = *ptr++;
+            remaining--;
+            if (remaining >= len && len <= OGS_MAX_IMEISV_LEN) {
+                sess->imeisv_len = len;
+                memcpy(sess->imeisv, ptr, len);
+            }
+        }
+
+        /* Derive per-device MAC for TAP devices from IMEISV */
+        if (sess->imeisv_len > 0) {
+            uint8_t mac_prefix[3];
+            int offset;
+
+            /*
+             *   Byte 0-2 : 3-byte prefix from IMEI TAC CSV lookup
+             *               (fallback 02:00:00 if no entry matches)
+             *   Byte 3-5 : last 3 BCD bytes of IMEISV (serial number digits,
+             *               most unique part after the TAC)
+             */
+            upf_lookup_mac_prefix_by_imei(sess->imeisv, sess->imeisv_len,
+                                          mac_prefix);
+            sess->imeisv_mac_addr[0] = mac_prefix[0];
+            sess->imeisv_mac_addr[1] = mac_prefix[1];
+            sess->imeisv_mac_addr[2] = mac_prefix[2];
+            for (i = 0; i < 3; i++) {
+                offset = (int)sess->imeisv_len - 3 + i;
+                sess->imeisv_mac_addr[3 + i] =
+                    (offset >= 0) ? sess->imeisv[offset] : 0;
+            }
+        }
+    }
+
     for (i = 0; i < OGS_MAX_NUM_OF_QER; i++) {
         if (ogs_pfcp_handle_create_qer(&sess->pfcp, &req->create_qer[i],
                     &cause_value, &offending_ie_value) == NULL)
@@ -210,6 +266,41 @@ void upf_n4_handle_session_establishment_request(
                 goto cleanup;
         }
     }
+
+    /*
+     * If no IMEISV was provided, derive a unique per-session MAC from the
+     * UE's IPv4 address so that every session has a distinct Ethernet identity
+     * on the TAP.  Using proxy_mac_addr for all sessions would cause the
+     * gateway to see repeated GARPs from the same MAC claiming different IPs,
+     * which suppresses the ARP response that teaches us the gateway MAC.
+     *
+     *   Byte 0  : 0x02 (locally-administered, unicast)
+     *   Bytes 1-2: 0x00:0x00 (reserved)
+     *   Bytes 3-5: octets 1-3 of the UE IPv4 address
+     *
+     * This gives a unique MAC within any reasonable UE IP pool.
+     */
+    if (sess->ipv4) {
+        static const uint8_t zero_mac[6] = {0};
+        if (memcmp(sess->imeisv_mac_addr, zero_mac, 6) == 0) {
+            const uint8_t *ip = (const uint8_t *)sess->ipv4->addr;
+            sess->imeisv_mac_addr[0] = 0x02;
+            sess->imeisv_mac_addr[1] = 0x00;
+            sess->imeisv_mac_addr[2] = 0x00;
+            sess->imeisv_mac_addr[3] = ip[1];
+            sess->imeisv_mac_addr[4] = ip[2];
+            sess->imeisv_mac_addr[5] = ip[3];
+        }
+    }
+
+    /*
+     * Announce the per-subscriber MAC to the upstream gateway via a
+     * gratuitous ARP (IPv4) and/or unsolicited Neighbor Advertisement (IPv6).
+     * This proactively populates the router's ARP/NDP cache so that downlink
+     * packets are forwarded to the correct IMEISV-derived MAC immediately,
+     * without waiting for the router to issue its own ARP/NDP request.
+     */
+    upf_gtp_announce_subscriber(sess);
 
     /* Send Buffered Packet to gNB/SGW */
     ogs_list_for_each(&sess->pfcp.pdr_list, pdr) {
