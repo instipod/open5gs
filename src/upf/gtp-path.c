@@ -623,11 +623,14 @@ static void _gtpv1_tun_recv_common_cb(
         /*
          * In TAP mode, Router Advertisements (and other IPv6 multicast
          * control traffic from the upstream router) arrive with a destination
-         * of ff02::1 (all-nodes) or the UE's link-local address — neither of
-         * which is in the per-session IPv6 hash (keyed by global /64 prefix).
-         * Handle these before the normal session lookup:
-         *   - Multicast dst  → deliver to every IPv6 UE on this TAP device.
-         *   - Link-local dst → find the UE by matching the lower-64-bit IID.
+         * of ff02::1 (all-nodes), which is not in the per-session IPv6 hash
+         * (keyed by global /64 prefix).  Deliver multicast to every IPv6 UE
+         * on this TAP device.
+         *
+         * Link-local unicast is dropped: RSes are intercepted uplink and
+         * answered with a synthetic RA, and NS for fe80::1 are intercepted
+         * uplink and answered with a synthetic NA, so the real router never
+         * sends link-local unicast toward a UE.
          */
         if (tap_dev) {
             struct ip *ip_h_chk = (struct ip *)recvbuf->data;
@@ -643,13 +646,7 @@ static void _gtpv1_tun_recv_common_cb(
                     upf_gtp_handle_tap_ipv6_mcast(recvbuf, tap_dev);
                     goto cleanup;
                 } else if (IN6_IS_ADDR_LINKLOCAL(&ip6_dst)) {
-                    /* Link-local unicast (e.g. solicited RA to UE's
-                     * fe80:: address).  IID-based matching is unreliable:
-                     * the UE derives its own link-local IID from EUI-64/MAC,
-                     * not from the network-assigned global address stored in
-                     * sess->ipv6->addr[2:3].  Deliver to all IPv6 sessions
-                     * on this TAP device instead. */
-                    upf_gtp_handle_tap_ipv6_mcast(recvbuf, tap_dev);
+                    /* Drop: all link-local unicast is handled synthetically. */
                     goto cleanup;
                 }
             }
@@ -1359,15 +1356,12 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
              * are trying to resolve the gateway link-local address (fe80::1)
              * advertised in our synthetic Router Advertisement.
              *
-             * Without interception the NS reaches the real router via the TAP;
-             * the router replies with a unicast NA to the UE's fe80:: address,
-             * which upf_gtp_handle_tap_ipv6_mcast() then broadcasts to every
-             * IPv6 UE on the TAP.  Instead we reply here directly, using the
-             * gw6_mac_addr we already learned from the TAP, so only the
-             * requesting UE gets the NA.
-             *
-             * We only intercept when gw6_mac_addr is known; if it is not yet
-             * learned we fall through and let the real router answer normally.
+             * If gw6_mac_addr is known, reply with a synthetic NA so only the
+             * requesting UE gets the answer.  If it is not yet known, drop the
+             * NS rather than forwarding it to the real router — forwarding
+             * would cause the router to send a unicast NA to the UE's fe80::
+             * address, which would be dropped by the downlink link-local filter
+             * anyway.  The UE will retry the NS once gw6_mac_addr is learned.
              */
             if (dev && dev->is_tap && ip_h->ip_v == 6 &&
                     pkbuf->len >= (int)(sizeof(struct ip6_hdr) +
@@ -1388,15 +1382,18 @@ static void _gtpv1_u_recv_cb(short when, ogs_socket_t fd, void *data)
                             0xfe,0x80, 0,0, 0,0, 0,0,
                             0,0, 0,0, 0,0, 0,0x01
                         };
-                        static const uint8_t zero_mac6[ETHER_ADDR_LEN] = {0};
                         if (memcmp(ns_h->nd_ns_target.s6_addr,
-                                   gw_ll_target, 16) == 0 &&
-                                memcmp(dev->gw6_mac_addr,
+                                   gw_ll_target, 16) == 0) {
+                            static const uint8_t zero_mac6[ETHER_ADDR_LEN] = {0};
+                            if (memcmp(dev->gw6_mac_addr,
                                        zero_mac6, ETHER_ADDR_LEN) != 0) {
-                            _send_gateway_neighbor_advertisement(
-                                    sess,
-                                    ip6_ns->ip6_src.s6_addr,
-                                    dev);
+                                _send_gateway_neighbor_advertisement(
+                                        sess,
+                                        ip6_ns->ip6_src.s6_addr,
+                                        dev);
+                            }
+                            /* Drop whether or not we replied — never forward
+                             * to the real router. */
                             goto cleanup;
                         }
                     }
