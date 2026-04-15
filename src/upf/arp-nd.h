@@ -43,7 +43,6 @@ uint8_t arp_who_has_build(uint8_t *buf, const uint8_t *target_ipv4,
         const uint8_t *sender_ipv4, const uint8_t *sender_mac);
 uint8_t ns_request_build(uint8_t *buf, const uint8_t *target_ipv6, const uint8_t *sender_mac);
 uint8_t garp_build(uint8_t *buf, const uint8_t *ipv4_addr, const uint8_t *mac);
-uint8_t unsolicited_na_build(uint8_t *buf, const uint8_t *ipv6_addr, const uint8_t *mac);
 bool is_arp_req(uint8_t *data, uint len);
 uint32_t arp_parse_target_addr(uint8_t *data, uint len);
 uint8_t arp_reply(uint8_t *reply_data, uint8_t *request_data, uint len,

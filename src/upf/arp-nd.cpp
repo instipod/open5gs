@@ -223,31 +223,6 @@ uint8_t garp_build(uint8_t *buf, const uint8_t *ipv4_addr, const uint8_t *mac)
     return _serialize_reply(buf, frame);
 }
 
-uint8_t unsolicited_na_build(uint8_t *buf, const uint8_t *ipv6_addr,
-        const uint8_t *mac)
-{
-    /*
-     * Unsolicited Neighbor Advertisement:
-     *   src IPv6  = UE address, dst IPv6 = ff02::1 (all nodes)
-     *   Override flag set so receivers update existing cache entries
-     *   Ethernet dst = 33:33:00:00:00:01 (mapped multicast for ff02::1)
-     */
-    HWAddress<ETHER_ADDR_LEN> src_mac(mac);
-    IPv6Address ue_ip(ipv6_addr);
-
-    ICMPv6 na(ICMPv6::NEIGHBOUR_ADVERT);
-    na.target_addr(ue_ip);
-    na.target_link_layer_addr(src_mac);
-    na.override(true);
-
-    IPv6 ip6(IPv6Address("ff02::1"), ue_ip);
-    ip6.hop_limit(255);
-
-    EthernetII frame(HWAddress<ETHER_ADDR_LEN>("33:33:00:00:00:01"), src_mac);
-    frame /= ip6 / na;
-    return _serialize_reply(buf, frame);
-}
-
 bool nd_parse_target_addr(uint8_t *data, uint len, uint8_t *target_addr)
 {
     EthernetII pdu(data, len);

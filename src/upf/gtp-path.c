@@ -400,32 +400,6 @@ void upf_gtp_announce_subscriber(upf_sess_t *sess)
         }
     }
 
-    if (sess->ipv6) {
-        subnet = sess->ipv6->subnet;
-        if (subnet && subnet->dev && subnet->dev->is_tap) {
-            dev = subnet->dev;
-            pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
-            ogs_assert(pkbuf);
-            ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
-            ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
-            size = unsolicited_na_build(pkbuf->data,
-                    (const uint8_t *)sess->ipv6->addr, announce_mac);
-            if (size > 0) {
-                char buf[OGS_ADDRSTRLEN];
-                ogs_pkbuf_trim(pkbuf, size);
-                if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
-                    ogs_warn("unsolicited NA write failed");
-                else
-                    ogs_info("[%s] unsolicited NA sent for UE IP [%s] MAC "
-                        "%02x:%02x:%02x:%02x:%02x:%02x",
-                        dev->ifname,
-                        OGS_INET6_NTOP(sess->ipv6->addr, buf),
-                        announce_mac[0], announce_mac[1], announce_mac[2],
-                        announce_mac[3], announce_mac[4], announce_mac[5]);
-            }
-            ogs_pkbuf_free(pkbuf);
-        }
-    }
 }
 
 static int check_framed_routes(upf_sess_t *sess, int family, uint32_t *addr)
