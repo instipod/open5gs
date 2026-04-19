@@ -400,6 +400,43 @@ void upf_gtp_announce_subscriber(upf_sess_t *sess)
         }
     }
 
+    if (sess->ipv6) {
+        subnet = sess->ipv6->subnet;
+        if (subnet && subnet->dev && subnet->dev->is_tap) {
+            dev = subnet->dev;
+            /*
+             * Send a Neighbor Solicitation to the IPv6 gateway to proactively
+             * learn its MAC address (gw6_mac_addr) before downlink traffic arrives.
+             * This mirrors the IPv4 ARP Who-Has behavior above.
+             *
+             * The NS is sent from a link-local address derived from the UE's MAC
+             * (via EUI-64 in ns_request_build()) and targets the gateway's IPv6
+             * address.  The gateway will reply with a unicast Neighbor Advertisement
+             * containing its MAC, which will be learned by the TAP receive path.
+             */
+            if (subnet->gw.family == AF_INET6) {
+                char buf[OGS_ADDRSTRLEN];
+                pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+                ogs_assert(pkbuf);
+                ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+                ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+                size = ns_request_build(pkbuf->data,
+                        (const uint8_t *)subnet->gw.sub,
+                        announce_mac);
+                if (size > 0) {
+                    ogs_pkbuf_trim(pkbuf, size);
+                    if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                        ogs_warn("gateway IPv6 NS write failed");
+                    else
+                        ogs_debug("[%s] IPv6 NS sent for gateway [%s]",
+                            dev->ifname,
+                            OGS_INET6_NTOP(subnet->gw.sub, buf));
+                }
+                ogs_pkbuf_free(pkbuf);
+            }
+        }
+    }
+
 }
 
 static int check_framed_routes(upf_sess_t *sess, int family, uint32_t *addr)
@@ -1712,23 +1749,47 @@ static void _send_gw_nd_request(ogs_pfcp_dev_t *dev)
         if (!subnet->gw.family)
             continue;
 
-        pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
-        ogs_assert(pkbuf);
-        ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
-        ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
-        size = ns_request_build(pkbuf->data,
-                (const uint8_t *)subnet->gw.sub, proxy_mac_addr);
-        if (size > 0) {
-            char buf[OGS_ADDRSTRLEN];
-            ogs_pkbuf_trim(pkbuf, size);
-            if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
-                ogs_warn("[%s] gateway NS write failed", dev->ifname);
-            else
-                ogs_debug("[%s] NS sent for IPv6 gateway [%s]",
-                    dev->ifname,
-                    OGS_INET6_NTOP(&subnet->gw.sub, buf));
+        /*
+         * Search for an active IPv6 session on this subnet and use its MAC.
+         * Sending NS from a real UE MAC is more likely to elicit a gateway
+         * response than using the proxy MAC, and helps detect gateway MAC
+         * changes (e.g. router failover) even when no downlink traffic flows.
+         * Falls back to proxy_mac_addr when no sessions are active.
+         */
+        {
+            static const uint8_t zero_mac[ETHER_ADDR_LEN] = {0};
+            upf_sess_t *s = NULL;
+            const uint8_t *sender_mac = proxy_mac_addr;
+
+            ogs_list_for_each(&upf_self()->sess_list, s) {
+                if (!s->ipv6)
+                    continue;
+                if (s->ipv6->subnet != subnet)
+                    continue;
+                if (memcmp(s->imeisv_mac_addr, zero_mac, ETHER_ADDR_LEN) != 0)
+                    sender_mac = s->imeisv_mac_addr;
+                break;
+            }
+
+            pkbuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+            ogs_assert(pkbuf);
+            ogs_pkbuf_reserve(pkbuf, OGS_TUN_MAX_HEADROOM);
+            ogs_pkbuf_put(pkbuf, OGS_MAX_PKT_LEN - OGS_TUN_MAX_HEADROOM);
+            size = ns_request_build(pkbuf->data,
+                    (const uint8_t *)subnet->gw.sub, sender_mac);
+
+            if (size > 0) {
+                char buf[OGS_ADDRSTRLEN];
+                ogs_pkbuf_trim(pkbuf, size);
+                if (ogs_tun_write(dev->fd, pkbuf) != OGS_OK)
+                    ogs_warn("[%s] gateway NS write failed", dev->ifname);
+                else
+                    ogs_debug("[%s] NS sent for IPv6 gateway [%s]",
+                        dev->ifname,
+                        OGS_INET6_NTOP(&subnet->gw.sub, buf));
+            }
+            ogs_pkbuf_free(pkbuf);
         }
-        ogs_pkbuf_free(pkbuf);
         break; /* One IPv6 subnet per device is sufficient */
     }
 }
