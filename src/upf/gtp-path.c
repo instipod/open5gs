@@ -644,34 +644,38 @@ static void _gtpv1_tun_recv_common_cb(
         } else if (eth_type == ETHERTYPE_IPV6 &&
                     is_nd_req(recvbuf->data, recvbuf->len)) {
             uint8_t nd_target[16];
-            const uint8_t *reply_mac = proxy_mac_addr;
+            upf_sess_t *nd_sess = NULL;
             if (nd_parse_target_addr(recvbuf->data, recvbuf->len, nd_target)) {
                 char buf[OGS_ADDRSTRLEN];
                 ogs_debug("[RECV] NS request for UE IP [%s]",
                     OGS_INET6_NTOP(nd_target, buf));
-                upf_sess_t *nd_sess =
-                        upf_sess_find_by_ipv6((uint32_t *)nd_target);
-                /* Do not reply if the session is homed on a different TAP */
+                nd_sess = upf_sess_find_by_ipv6((uint32_t *)nd_target);
+                /* Reject sessions homed on a different TAP device */
                 if (nd_sess && (!tap_dev || !nd_sess->ipv6 ||
                         !nd_sess->ipv6->subnet ||
                         nd_sess->ipv6->subnet->dev != tap_dev))
-                    goto cleanup;
-                static const uint8_t zero_mac_nd[ETHER_ADDR_LEN] = {0};
-                if (nd_sess && memcmp(nd_sess->imeisv_mac_addr,
-                                     zero_mac_nd, ETHER_ADDR_LEN) != 0)
-                    reply_mac = nd_sess->imeisv_mac_addr;
+                    nd_sess = NULL;
             }
-            replybuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
-            ogs_assert(replybuf);
-            ogs_pkbuf_reserve(replybuf, OGS_TUN_MAX_HEADROOM);
-            ogs_pkbuf_put(replybuf, OGS_MAX_PKT_LEN-OGS_TUN_MAX_HEADROOM);
-            size = nd_reply(replybuf->data, recvbuf->data, recvbuf->len,
-                reply_mac);
-            ogs_pkbuf_trim(replybuf, size);
-            ogs_debug("[SEND] NS reply for UE IP: MAC "
-                "%02x:%02x:%02x:%02x:%02x:%02x",
-                reply_mac[0], reply_mac[1], reply_mac[2],
-                reply_mac[3], reply_mac[4], reply_mac[5]);
+            if (nd_sess) {
+                static const uint8_t zero_mac_nd[ETHER_ADDR_LEN] = {0};
+                const uint8_t *reply_mac =
+                        (memcmp(nd_sess->imeisv_mac_addr,
+                                zero_mac_nd, ETHER_ADDR_LEN) != 0) ?
+                        nd_sess->imeisv_mac_addr : proxy_mac_addr;
+                replybuf = ogs_pkbuf_alloc(packet_pool, OGS_MAX_PKT_LEN);
+                ogs_assert(replybuf);
+                ogs_pkbuf_reserve(replybuf, OGS_TUN_MAX_HEADROOM);
+                ogs_pkbuf_put(replybuf, OGS_MAX_PKT_LEN-OGS_TUN_MAX_HEADROOM);
+                size = nd_reply(replybuf->data, recvbuf->data, recvbuf->len,
+                    reply_mac);
+                ogs_pkbuf_trim(replybuf, size);
+                ogs_debug("[SEND] NS reply for UE IP: MAC "
+                    "%02x:%02x:%02x:%02x:%02x:%02x",
+                    reply_mac[0], reply_mac[1], reply_mac[2],
+                    reply_mac[3], reply_mac[4], reply_mac[5]);
+            } else {
+                goto cleanup;
+            }
         }
         if (replybuf) {
             if (ogs_tun_write(fd, replybuf) != OGS_OK)
