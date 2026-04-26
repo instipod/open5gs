@@ -1600,7 +1600,7 @@ int mme_context_parse_config(void)
                     ogs_yaml_iter_recurse(&mme_iter, &tai_array);
                     do {
                         const char *mcc = NULL, *mnc = NULL;
-                        const char *timezone = NULL;
+                        const char *timezone_str = NULL;
                         int num_of_tac = 0;
                         uint16_t start[OGS_MAX_NUM_OF_TAI];
                         uint16_t end[OGS_MAX_NUM_OF_TAI];
@@ -1699,7 +1699,7 @@ int mme_context_parse_config(void)
                                     ogs_yaml_iter_type(&tac_iter) ==
                                         YAML_SEQUENCE_NODE);
                             } else if (!strcmp(tai_key, "timezone")) {
-                                timezone = ogs_yaml_iter_value(&tai_iter);
+                                timezone_str = ogs_yaml_iter_value(&tai_iter);
                             } else
                                 ogs_warn("unknown key `%s`", tai_key);
                         }
@@ -1768,11 +1768,11 @@ int mme_context_parse_config(void)
                             YAML_SEQUENCE_NODE);
 
                     if (list2->num || num_of_list1 || num_of_list0) {
-                        if (timezone) {
+                        if (timezone_str) {
                             ogs_cpystrn(self.served_tai[self.num_of_served_tai].timezone,
-                                timezone, sizeof(self.served_tai[self.num_of_served_tai].timezone));
+                                timezone_str, sizeof(self.served_tai[self.num_of_served_tai].timezone));
                             self.served_tai[self.num_of_served_tai].has_timezone = true;
-                            ogs_info("Configured timezone for TAI: %s", timezone);
+                            ogs_info("Configured timezone for TAI: %s", timezone_str);
                         }
                         self.num_of_served_tai++;
                     }
@@ -5155,8 +5155,6 @@ static void get_timezone_info(const char *timezone_id, int32_t *offset_seconds,
 
     if (local_tm.tm_isdst > 0) {
         dst = 1;
-    } else if (local_tm.tm_isdst == 0) {
-        dst = 0;
     } else {
         dst = 0;
     }
