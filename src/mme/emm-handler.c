@@ -288,25 +288,28 @@ int emm_handle_attach_complete(
         &emm_information->network_daylight_saving_time;
 
     struct timeval tv;
-    struct tm gmt, local;
+    struct tm gmt;
+    int served_tai_index;
+    int32_t timezone_offset_seconds;
+    uint8_t daylight_saving_time_value;
 
     ogs_assert(mme_ue);
     ogs_assert(enb_ue);
 
     ogs_info("    IMSI[%s]", mme_ue->imsi_bcd);
 
+    served_tai_index = mme_find_served_tai(&mme_ue->tai);
+    timezone_offset_seconds = mme_get_timezone_offset(served_tai_index);
+    daylight_saving_time_value = mme_get_daylight_saving_time(served_tai_index);
+
     ogs_gettimeofday(&tv);
     ogs_gmtime(tv.tv_sec, &gmt);
-    ogs_localtime(tv.tv_sec, &local);
 
-    ogs_info("    UTC [%04d-%02d-%02dT%02d:%02d:%02d] Timezone[%d]/DST[%d]",
+    ogs_info("    UTC [%04d-%02d-%02dT%02d:%02d:%02d]",
         gmt.tm_year+1900, gmt.tm_mon+1, gmt.tm_mday,
-        gmt.tm_hour, gmt.tm_min, gmt.tm_sec,
-        (int)gmt.tm_gmtoff, gmt.tm_isdst);
-    ogs_info("    LOCAL [%04d-%02d-%02dT%02d:%02d:%02d] Timezone[%d]/DST[%d]",
-        local.tm_year+1900, local.tm_mon+1, local.tm_mday,
-        local.tm_hour, local.tm_min, local.tm_sec,
-        (int)local.tm_gmtoff, local.tm_isdst);
+        gmt.tm_hour, gmt.tm_min, gmt.tm_sec);
+    ogs_info("    Configured Timezone Offset[%d seconds] DST[%d]",
+        timezone_offset_seconds, daylight_saving_time_value);
 
     rv = nas_eps_send_emm_to_esm(
             mme_ue, &attach_complete->esm_message_container);
@@ -341,10 +344,10 @@ int emm_handle_attach_complete(
         emm_information->presencemask |=
             OGS_NAS_EPS_EMM_INFORMATION_LOCAL_TIME_ZONE_PRESENT;
 
-        if (local.tm_gmtoff >= 0) {
-            *local_time_zone = OGS_NAS_TIME_TO_BCD(local.tm_gmtoff / 900);
+        if (timezone_offset_seconds >= 0) {
+            *local_time_zone = OGS_NAS_TIME_TO_BCD(timezone_offset_seconds / 900);
         } else {
-            *local_time_zone = OGS_NAS_TIME_TO_BCD((-local.tm_gmtoff) / 900);
+            *local_time_zone = OGS_NAS_TIME_TO_BCD((-timezone_offset_seconds) / 900);
             *local_time_zone |= 0x08;
         }
         ogs_debug("    Timezone:0x%x", *local_time_zone);
@@ -368,9 +371,7 @@ int emm_handle_attach_complete(
         emm_information->presencemask |=
             OGS_NAS_EPS_EMM_INFORMATION_NETWORK_DAYLIGHT_SAVING_TIME_PRESENT;
         network_daylight_saving_time->length = 1;
-        if (local.tm_isdst > 0) {
-            network_daylight_saving_time->value = 1;
-        }
+        network_daylight_saving_time->value = daylight_saving_time_value;
     }
 
     emmbuf = nas_eps_security_encode(mme_ue, &message);

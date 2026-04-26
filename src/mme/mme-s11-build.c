@@ -356,14 +356,17 @@ ogs_pkbuf_t *mme_s11_build_create_session_request(
 
     /* UE Time Zone */
     memset(&ue_timezone, 0, sizeof(ue_timezone));
-    ogs_gettimeofday(&now);
-    ogs_localtime(now.tv_sec, &time_exp);
-    if (time_exp.tm_gmtoff >= 0) {
-        ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(time_exp.tm_gmtoff / 900);
-    } else {
-        ue_timezone.timezone =
-            OGS_GTP2_TIME_TO_BCD((-time_exp.tm_gmtoff) / 900);
-        ue_timezone.timezone |= 0x08;
+    {
+        int served_tai_index = mme_find_served_tai(&mme_ue->tai);
+        int32_t timezone_offset_seconds = mme_get_timezone_offset(served_tai_index);
+
+        if (timezone_offset_seconds >= 0) {
+            ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(timezone_offset_seconds / 900);
+        } else {
+            ue_timezone.timezone =
+                OGS_GTP2_TIME_TO_BCD((-timezone_offset_seconds) / 900);
+            ue_timezone.timezone |= 0x08;
+        }
     }
     /* quarters of an hour */
     ue_timezone.daylight_saving_time =
@@ -646,14 +649,17 @@ ogs_pkbuf_t *mme_s11_build_create_bearer_response(
 
     /* UE Time Zone */
     memset(&ue_timezone, 0, sizeof(ue_timezone));
-    ogs_gettimeofday(&now);
-    ogs_localtime(now.tv_sec, &time_exp);
-    if (time_exp.tm_gmtoff >= 0) {
-        ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(time_exp.tm_gmtoff / 900);
-    } else {
-        ue_timezone.timezone =
-            OGS_GTP2_TIME_TO_BCD((-time_exp.tm_gmtoff) / 900);
-        ue_timezone.timezone |= 0x08;
+    {
+        int served_tai_index = mme_find_served_tai(&mme_ue->tai);
+        int32_t timezone_offset_seconds = mme_get_timezone_offset(served_tai_index);
+
+        if (timezone_offset_seconds >= 0) {
+            ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(timezone_offset_seconds / 900);
+        } else {
+            ue_timezone.timezone =
+                OGS_GTP2_TIME_TO_BCD((-timezone_offset_seconds) / 900);
+            ue_timezone.timezone |= 0x08;
+        }
     }
     ue_timezone.daylight_saving_time =
         OGS_GTP2_UE_TIME_ZONE_NO_ADJUSTMENT_FOR_DAYLIGHT_SAVING_TIME;
@@ -727,13 +733,16 @@ ogs_pkbuf_t *mme_s11_build_update_bearer_response(
 
     /* UE Time Zone */
     memset(&ue_timezone, 0, sizeof(ue_timezone));
-    ogs_gettimeofday(&now);
-    ogs_localtime(now.tv_sec, &time_exp);
-    if (time_exp.tm_gmtoff >= 0) {
-        ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(time_exp.tm_gmtoff / 900);
-    } else {
-        ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD((-time_exp.tm_gmtoff) / 900);
-        ue_timezone.timezone |= 0x08;
+    {
+        int served_tai_index = mme_find_served_tai(&mme_ue->tai);
+        int32_t timezone_offset_seconds = mme_get_timezone_offset(served_tai_index);
+
+        if (timezone_offset_seconds >= 0) {
+            ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(timezone_offset_seconds / 900);
+        } else {
+            ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD((-timezone_offset_seconds) / 900);
+            ue_timezone.timezone |= 0x08;
+        }
     }
     ue_timezone.daylight_saving_time =
         OGS_GTP2_UE_TIME_ZONE_NO_ADJUSTMENT_FOR_DAYLIGHT_SAVING_TIME;
@@ -838,13 +847,16 @@ ogs_pkbuf_t *mme_s11_build_delete_bearer_response(
 
     /* UE Time Zone */
     memset(&ue_timezone, 0, sizeof(ue_timezone));
-    ogs_gettimeofday(&now);
-    ogs_localtime(now.tv_sec, &time_exp);
-    if (time_exp.tm_gmtoff >= 0) {
-        ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(time_exp.tm_gmtoff / 900);
-    } else {
-        ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD((-time_exp.tm_gmtoff) / 900);
-        ue_timezone.timezone |= 0x08;
+    {
+        int served_tai_index = mme_find_served_tai(&mme_ue->tai);
+        int32_t timezone_offset_seconds = mme_get_timezone_offset(served_tai_index);
+
+        if (timezone_offset_seconds >= 0) {
+            ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD(timezone_offset_seconds / 900);
+        } else {
+            ue_timezone.timezone = OGS_GTP2_TIME_TO_BCD((-timezone_offset_seconds) / 900);
+            ue_timezone.timezone |= 0x08;
+        }
     }
     ue_timezone.daylight_saving_time =
         OGS_GTP2_UE_TIME_ZONE_NO_ADJUSTMENT_FOR_DAYLIGHT_SAVING_TIME;

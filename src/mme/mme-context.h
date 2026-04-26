@@ -113,6 +113,8 @@ typedef struct mme_context_s {
         ogs_eps_tai0_list_t list0;
         ogs_eps_tai1_list_t list1;
         ogs_eps_tai2_list_t list2;
+        bool has_timezone;
+        char timezone[64];
     } served_tai[OGS_MAX_NUM_OF_SUPPORTED_TA];
 
     /* Access Control */
@@ -1248,6 +1250,8 @@ ogs_session_t *mme_session_find_by_apn(mme_ue_t *mme_ue, const char *apn);
 ogs_session_t *mme_default_session(mme_ue_t *mme_ue);
 
 int mme_find_served_tai(ogs_eps_tai_t *tai);
+int32_t mme_get_timezone_offset(int served_tai_index);
+uint8_t mme_get_daylight_saving_time(int served_tai_index);
 
 mme_m_tmsi_t *mme_m_tmsi_alloc(void);
 int mme_m_tmsi_free(mme_m_tmsi_t *tmsi);

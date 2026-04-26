@@ -1600,6 +1600,7 @@ int mme_context_parse_config(void)
                     ogs_yaml_iter_recurse(&mme_iter, &tai_array);
                     do {
                         const char *mcc = NULL, *mnc = NULL;
+                        const char *timezone = NULL;
                         int num_of_tac = 0;
                         uint16_t start[OGS_MAX_NUM_OF_TAI];
                         uint16_t end[OGS_MAX_NUM_OF_TAI];
@@ -1697,6 +1698,8 @@ int mme_context_parse_config(void)
                                 } while (
                                     ogs_yaml_iter_type(&tac_iter) ==
                                         YAML_SEQUENCE_NODE);
+                            } else if (!strcmp(tai_key, "timezone")) {
+                                timezone = ogs_yaml_iter_value(&tai_iter);
                             } else
                                 ogs_warn("unknown key `%s`", tai_key);
                         }
@@ -1765,6 +1768,12 @@ int mme_context_parse_config(void)
                             YAML_SEQUENCE_NODE);
 
                     if (list2->num || num_of_list1 || num_of_list0) {
+                        if (timezone) {
+                            ogs_cpystrn(self.served_tai[self.num_of_served_tai].timezone,
+                                timezone, sizeof(self.served_tai[self.num_of_served_tai].timezone));
+                            self.served_tai[self.num_of_served_tai].has_timezone = true;
+                            ogs_info("Configured timezone for TAI: %s", timezone);
+                        }
                         self.num_of_served_tai++;
                     }
                 } else if (!strcmp(mme_key, "access_control")) {
@@ -5100,6 +5109,117 @@ int mme_find_served_tai(ogs_eps_tai_t *tai)
     }
 
     return -1;
+}
+
+static bool parse_fixed_offset(const char *tz_str, int32_t *offset_seconds)
+{
+    if (!tz_str || strlen(tz_str) < 5)
+        return false;
+
+    if (tz_str[0] != '+' && tz_str[0] != '-')
+        return false;
+
+    int sign = (tz_str[0] == '+') ? 1 : -1;
+    int hours = (tz_str[1] - '0') * 10 + (tz_str[2] - '0');
+    int minutes = (tz_str[3] - '0') * 10 + (tz_str[4] - '0');
+
+    if (hours > 23 || minutes > 59)
+        return false;
+
+    *offset_seconds = sign * (hours * 3600 + minutes * 60);
+    return true;
+}
+
+static void get_timezone_info(const char *timezone_id, int32_t *offset_seconds,
+                               uint8_t *dst_value)
+{
+    char *old_tz = NULL;
+    struct timeval tv;
+    struct tm local_tm;
+    int32_t offset = 0;
+    uint8_t dst = 0;
+
+    if (timezone_id && strlen(timezone_id) > 0) {
+        old_tz = getenv("TZ");
+        if (old_tz)
+            old_tz = ogs_strdup(old_tz);
+
+        setenv("TZ", timezone_id, 1);
+        tzset();
+    }
+
+    ogs_gettimeofday(&tv);
+    ogs_localtime(tv.tv_sec, &local_tm);
+
+    offset = (int32_t)local_tm.tm_gmtoff;
+
+    if (local_tm.tm_isdst > 0) {
+        dst = 1;
+    } else if (local_tm.tm_isdst == 0) {
+        dst = 0;
+    } else {
+        dst = 0;
+    }
+
+    if (timezone_id && strlen(timezone_id) > 0) {
+        if (old_tz) {
+            setenv("TZ", old_tz, 1);
+            ogs_free(old_tz);
+        } else {
+            unsetenv("TZ");
+        }
+        tzset();
+    }
+
+    if (offset_seconds)
+        *offset_seconds = offset;
+    if (dst_value)
+        *dst_value = dst;
+}
+
+int32_t mme_get_timezone_offset(int served_tai_index)
+{
+    int32_t offset = 0;
+
+    if (served_tai_index >= 0 &&
+        served_tai_index < self.num_of_served_tai &&
+        self.served_tai[served_tai_index].has_timezone) {
+
+        const char *tz = self.served_tai[served_tai_index].timezone;
+
+        if (parse_fixed_offset(tz, &offset)) {
+            return offset;
+        }
+
+        get_timezone_info(tz, &offset, NULL);
+        return offset;
+    }
+
+    get_timezone_info(NULL, &offset, NULL);
+    return offset;
+}
+
+uint8_t mme_get_daylight_saving_time(int served_tai_index)
+{
+    uint8_t dst = 0;
+
+    if (served_tai_index >= 0 &&
+        served_tai_index < self.num_of_served_tai &&
+        self.served_tai[served_tai_index].has_timezone) {
+
+        const char *tz = self.served_tai[served_tai_index].timezone;
+        int32_t offset = 0;
+
+        if (parse_fixed_offset(tz, &offset)) {
+            return 0;
+        }
+
+        get_timezone_info(tz, NULL, &dst);
+        return dst;
+    }
+
+    get_timezone_info(NULL, NULL, &dst);
+    return dst;
 }
 
 #if 0 /* DEPRECATED */
