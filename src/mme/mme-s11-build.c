@@ -45,8 +45,6 @@ ogs_pkbuf_t *mme_s11_build_create_session_request(
     ogs_gtp2_bearer_qos_t bearer_qos;
     char bearer_qos_buf[OGS_BEARER_PER_UE][GTP2_BEARER_QOS_LEN];
     ogs_gtp2_ue_timezone_t ue_timezone;
-    struct timeval now;
-    struct tm time_exp;
     char apn[OGS_MAX_APN_LEN+1];
 
     ogs_gtp2_indication_t indication;
@@ -572,8 +570,6 @@ ogs_pkbuf_t *mme_s11_build_create_bearer_response(
     ogs_gtp2_uli_t uli;
     char uli_buf[OGS_GTP2_MAX_ULI_LEN];
     ogs_gtp2_ue_timezone_t ue_timezone;
-    struct timeval now;
-    struct tm time_exp;
 
     mme_ue_t *mme_ue = NULL;
     sgw_ue_t *sgw_ue = NULL;
@@ -682,8 +678,6 @@ ogs_pkbuf_t *mme_s11_build_update_bearer_response(
     ogs_gtp2_uli_t uli;
     char uli_buf[OGS_GTP2_MAX_ULI_LEN];
     ogs_gtp2_ue_timezone_t ue_timezone;
-    struct timeval now;
-    struct tm time_exp;
 
     mme_ue_t *mme_ue = NULL;
     sgw_ue_t *sgw_ue = NULL;
@@ -764,8 +758,6 @@ ogs_pkbuf_t *mme_s11_build_delete_bearer_response(
     ogs_gtp2_uli_t uli;
     char uli_buf[OGS_GTP2_MAX_ULI_LEN];
     ogs_gtp2_ue_timezone_t ue_timezone;
-    struct timeval now;
-    struct tm time_exp;
 
     mme_ue_t *mme_ue = NULL;
     sgw_ue_t *sgw_ue = NULL;
