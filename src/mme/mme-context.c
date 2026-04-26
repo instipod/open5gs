@@ -1597,13 +1597,14 @@ int mme_context_parse_config(void)
                     list2 = &self.served_tai[self.num_of_served_tai].list2;
 
                     ogs_yaml_iter_t tai_array, tai_iter;
+                    const char *timezone_str = NULL;
                     ogs_yaml_iter_recurse(&mme_iter, &tai_array);
                     do {
                         const char *mcc = NULL, *mnc = NULL;
-                        const char *timezone_str = NULL;
                         int num_of_tac = 0;
                         uint16_t start[OGS_MAX_NUM_OF_TAI];
                         uint16_t end[OGS_MAX_NUM_OF_TAI];
+                        timezone_str = NULL;
 
                         if (ogs_yaml_iter_type(&tai_array) ==
                                 YAML_MAPPING_NODE) {
