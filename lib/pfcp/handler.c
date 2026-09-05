@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2024 by Sukchan Lee <acetcom@gmail.com>
+ * Copyright (C) 2019-2026 by Sukchan Lee <acetcom@gmail.com>
  *
  * This file is part of Open5GS.
  *
@@ -813,6 +813,14 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_created_pdr(ogs_pfcp_sess_t *sess,
     if (message->local_f_teid.presence) {
         ogs_pfcp_f_teid_t f_teid;
 
+        if (!message->local_f_teid.data || !message->local_f_teid.len) {
+            ogs_error("Invalid F-TEID");
+            *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+            *offending_ie_value = OGS_PFCP_F_TEID_TYPE;
+            return NULL;
+        }
+
+        memset(&f_teid, 0, sizeof(f_teid));
         memcpy(&f_teid, message->local_f_teid.data,
                 ogs_min(sizeof(f_teid), message->local_f_teid.len));
         if (f_teid.ipv4 == 0 && f_teid.ipv6 == 0) {
@@ -824,9 +832,11 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_created_pdr(ogs_pfcp_sess_t *sess,
             return NULL;
         }
 
-        pdr->f_teid_len = message->local_f_teid.len;
+        memset(&pdr->f_teid, 0, sizeof(pdr->f_teid));
+        pdr->f_teid_len =
+            ogs_min(message->local_f_teid.len, sizeof(pdr->f_teid));
         memcpy(&pdr->f_teid, message->local_f_teid.data,
-                ogs_min(sizeof(pdr->f_teid), pdr->f_teid_len));
+                pdr->f_teid_len);
         ogs_assert(pdr->f_teid.ipv4 || pdr->f_teid.ipv6);
         pdr->f_teid.teid = be32toh(pdr->f_teid.teid);
     }
@@ -1021,9 +1031,20 @@ ogs_pfcp_pdr_t *ogs_pfcp_handle_update_pdr(ogs_pfcp_sess_t *sess,
         }
 
         if (message->pdi.local_f_teid.presence) {
-            pdr->f_teid_len = message->pdi.local_f_teid.len;
+            if (!message->pdi.local_f_teid.data ||
+                !message->pdi.local_f_teid.len) {
+                ogs_error("Invalid F-TEID");
+                *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+                *offending_ie_value = OGS_PFCP_F_TEID_TYPE;
+                return NULL;
+            }
+
+            memset(&pdr->f_teid, 0, sizeof(pdr->f_teid));
+            pdr->f_teid_len =
+                ogs_min(message->pdi.local_f_teid.len,
+                        sizeof(pdr->f_teid));
             memcpy(&pdr->f_teid, message->pdi.local_f_teid.data,
-                    ogs_min(sizeof(pdr->f_teid), pdr->f_teid_len));
+                    pdr->f_teid_len);
             pdr->f_teid.teid = be32toh(pdr->f_teid.teid);
         }
 
@@ -1070,6 +1091,82 @@ bool ogs_pfcp_handle_remove_pdr(ogs_pfcp_sess_t *sess,
     }
 
     ogs_pfcp_pdr_remove(pdr);
+
+    return true;
+}
+
+static bool parse_outer_header_creation(
+        ogs_pfcp_outer_header_creation_t *target,
+        ogs_pfcp_tlv_outer_header_creation_t *source,
+        uint8_t *cause_value, uint8_t *offending_ie_value)
+{
+    ogs_pfcp_outer_header_creation_t parsed;
+    uint32_t description_len, required_len;
+
+    ogs_assert(target);
+    ogs_assert(source);
+    ogs_assert(cause_value);
+    ogs_assert(offending_ie_value);
+
+    /* The Outer Header Creation Description occupies the first 2 octets */
+    description_len = offsetof(ogs_pfcp_outer_header_creation_t, teid);
+
+    if (!source->data || source->len < description_len) {
+        ogs_error("Invalid Outer Header Creation [data:%p,len:%d]",
+                source->data, source->len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return false;
+    }
+
+    memset(&parsed, 0, sizeof(parsed));
+    memcpy(&parsed, source->data, ogs_min(sizeof(parsed), source->len));
+
+    /*
+     * TS 29.244 8.2.56
+     *
+     * The TEID is present only when the description selects GTP-U/UDP/IPv4
+     * or GTP-U/UDP/IPv6. For UDP/IPvX or IPvX the address follows the
+     * description directly, and a port number or a C-TAG/S-TAG may follow.
+     *
+     * ogs_pfcp_outer_header_creation_t has a fixed layout that always
+     * places the TEID right after the description, so it can only
+     * represent GTP-U/UDP/IPv4, GTP-U/UDP/IPv6, or both together.
+     * Reject every other combination rather than decoding it at the
+     * wrong offsets.
+     *
+     * Mixing a GTP-U bit with a non-GTP-U one has to be rejected as
+     * well: ogs_pfcp_outer_header_creation_to_ip() treats udp6 and ip6
+     * as IPv6 selectors, so gtpu4|udp6 would be read as an IPv4v6
+     * address while only the IPv4 part was validated and present.
+     */
+    if ((!parsed.gtpu4 && !parsed.gtpu6) ||
+        parsed.udp4 || parsed.udp6 || parsed.ip4 || parsed.ip6 ||
+        parsed.ctag || parsed.stag || parsed.ssm_c_teid) {
+        ogs_error("Unsupported Outer Header Creation Description");
+        ogs_log_hexdump(OGS_LOG_ERROR, source->data, source->len);
+        *cause_value = OGS_PFCP_CAUSE_SERVICE_NOT_SUPPORTED;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return false;
+    }
+
+    required_len = description_len + sizeof(parsed.teid);
+    if (parsed.gtpu4)
+        required_len += OGS_IPV4_LEN;
+    if (parsed.gtpu6)
+        required_len += OGS_IPV6_LEN;
+
+    if (source->len < required_len) {
+        ogs_error("Truncated Outer Header Creation [len:%d,required:%d]",
+                source->len, required_len);
+        ogs_log_hexdump(OGS_LOG_ERROR, source->data, source->len);
+        *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
+        *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+        return false;
+    }
+
+    parsed.teid = be32toh(parsed.teid);
+    memcpy(target, &parsed, sizeof(*target));
 
     return true;
 }
@@ -1151,21 +1248,10 @@ ogs_pfcp_far_t *ogs_pfcp_handle_create_far(ogs_pfcp_sess_t *sess,
             ogs_pfcp_tlv_outer_header_creation_t *outer_header_creation =
                 &message->forwarding_parameters.outer_header_creation;
 
-            if (!outer_header_creation->data ||
-                    outer_header_creation->len == 0) {
-                ogs_error("Invalid Outer Header Creation [data:%p,len:%d]",
-                        outer_header_creation->data,
-                        outer_header_creation->len);
-                *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
-                *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+            if (parse_outer_header_creation(
+                        &far->outer_header_creation, outer_header_creation,
+                        cause_value, offending_ie_value) == false)
                 return NULL;
-            }
-
-            memcpy(&far->outer_header_creation, outer_header_creation->data,
-                    ogs_min(sizeof(far->outer_header_creation),
-                            outer_header_creation->len));
-            far->outer_header_creation.teid =
-                    be32toh(far->outer_header_creation.teid);
         }
     }
 
@@ -1276,21 +1362,10 @@ ogs_pfcp_far_t *ogs_pfcp_handle_update_far(ogs_pfcp_sess_t *sess,
             ogs_pfcp_tlv_outer_header_creation_t *outer_header_creation =
                 &message->update_forwarding_parameters.outer_header_creation;
 
-            if (!outer_header_creation->data ||
-                    outer_header_creation->len == 0) {
-                ogs_error("Invalid Outer Header Creation [data:%p,len:%d]",
-                        outer_header_creation->data,
-                        outer_header_creation->len);
-                *cause_value = OGS_PFCP_CAUSE_INVALID_LENGTH;
-                *offending_ie_value = OGS_PFCP_OUTER_HEADER_CREATION_TYPE;
+            if (parse_outer_header_creation(
+                        &far->outer_header_creation, outer_header_creation,
+                        cause_value, offending_ie_value) == false)
                 return NULL;
-            }
-
-            memcpy(&far->outer_header_creation, outer_header_creation->data,
-                    ogs_min(sizeof(far->outer_header_creation),
-                            outer_header_creation->len));
-            far->outer_header_creation.teid =
-                    be32toh(far->outer_header_creation.teid);
         }
     }
 
