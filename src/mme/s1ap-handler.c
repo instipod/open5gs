@@ -559,6 +559,7 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
     S1AP_CellIdentity_t *cell_ID = NULL;
 
     enb_ue_t *enb_ue = NULL;
+    mme_ue_t *mme_ue_from_stmsi = NULL;
 
     ogs_assert(enb);
     ogs_assert(enb->sctp.sock);
@@ -631,8 +632,6 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
         if (S_TMSI) {
             served_gummei_t *served_gummei = &mme_self()->served_gummei[0];
             ogs_nas_eps_guti_t nas_guti;
-            mme_ue_t *mme_ue = NULL;
-
             memset(&nas_guti, 0, sizeof(ogs_nas_eps_guti_t));
 
             /* Use the first configured plmn_id and mme group id */
@@ -668,44 +667,17 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
             memcpy(&nas_guti.m_tmsi, S_TMSI->m_TMSI.buf, S_TMSI->m_TMSI.size);
             nas_guti.m_tmsi = be32toh(nas_guti.m_tmsi);
 
-            mme_ue = mme_ue_find_by_guti(&nas_guti);
-            if (!mme_ue) {
+            mme_ue_from_stmsi = mme_ue_find_by_guti(&nas_guti);
+            if (!mme_ue_from_stmsi) {
                 ogs_info("Unknown UE by S_TMSI[G:%d,C:%d,M_TMSI:0x%x]",
                         nas_guti.mme_gid, nas_guti.mme_code, nas_guti.m_tmsi);
             } else {
                 ogs_info("    S_TMSI[G:%d,C:%d,M_TMSI:0x%x] IMSI:[%s]",
-                        mme_ue->current.guti.mme_gid,
-                        mme_ue->current.guti.mme_code,
-                        mme_ue->current.guti.m_tmsi,
-                        MME_UE_HAVE_IMSI(mme_ue)
-                            ? mme_ue->imsi_bcd : "Unknown");
-
-                /* If NAS(mme_ue_t) has already been associated with
-                 * older S1(enb_ue_t) context */
-                if (ECM_CONNECTED(mme_ue)) {
-    /*
-     * Issue #2786
-     *
-     * In cases where the UE sends an Integrity Un-Protected Attach
-     * Request or Service Request, there is an issue of sending
-     * a UEContextReleaseCommand for the OLD ENB Context.
-     *
-     * For example, if the UE switchs off and power-on after
-     * the first connection, the EPC sends a UEContextReleaseCommand.
-     *
-     * However, since there is no ENB context for this on the eNB,
-     * the eNB does not send a UEContextReleaseComplete,
-     * so the deletion of the ENB Context does not function properly.
-     *
-     * To solve this problem, the EPC has been modified to implicitly
-     * delete the ENB Context instead of sending a UEContextReleaseCommand.
-     */
-                    HOLDING_S1_CONTEXT(mme_ue);
-                }
-                enb_ue_associate_mme_ue(enb_ue, mme_ue);
-                ogs_debug("Mobile Reachable timer stopped for IMSI[%s]",
-                    mme_ue->imsi_bcd);
-                CLEAR_MME_UE_TIMER(mme_ue->t_mobile_reachable);
+                        mme_ue_from_stmsi->current.guti.mme_gid,
+                        mme_ue_from_stmsi->current.guti.mme_code,
+                        mme_ue_from_stmsi->current.guti.m_tmsi,
+                        MME_UE_HAVE_IMSI(mme_ue_from_stmsi)
+                            ? mme_ue_from_stmsi->imsi_bcd : "Unknown");
             }
         }
     } else {
@@ -803,6 +775,36 @@ void s1ap_handle_initial_ue_message(mme_enb_t *enb, ogs_s1ap_message_t *message)
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
+    }
+
+    if (mme_ue_from_stmsi) {
+        /* If NAS(mme_ue_t) has already been associated with
+         * older S1(enb_ue_t) context */
+        if (ECM_CONNECTED(mme_ue_from_stmsi)) {
+/*
+ * Issue #2786
+ *
+ * In cases where the UE sends an Integrity Un-Protected Attach
+ * Request or Service Request, there is an issue of sending
+ * a UEContextReleaseCommand for the OLD ENB Context.
+ *
+ * For example, if the UE switchs off and power-on after
+ * the first connection, the EPC sends a UEContextReleaseCommand.
+ *
+ * However, since there is no ENB context for this on the eNB,
+ * the eNB does not send a UEContextReleaseComplete,
+ * so the deletion of the ENB Context does not function properly.
+ *
+ * To solve this problem, the EPC has been modified to implicitly
+ * delete the ENB Context instead of sending a UEContextReleaseCommand.
+ */
+            HOLDING_S1_CONTEXT(mme_ue_from_stmsi);
+        }
+
+        enb_ue_associate_mme_ue(enb_ue, mme_ue_from_stmsi);
+        ogs_debug("Mobile Reachable timer stopped for IMSI[%s]",
+                mme_ue_from_stmsi->imsi_bcd);
+        CLEAR_MME_UE_TIMER(mme_ue_from_stmsi->t_mobile_reachable);
     }
     memcpy(&enb_ue->saved.e_cgi.plmn_id, pLMNidentity->buf,
             sizeof(enb_ue->saved.e_cgi.plmn_id));
@@ -2633,6 +2635,7 @@ void s1ap_handle_path_switch_request(
     S1AP_IntegrityProtectionAlgorithms_t *integrityProtectionAlgorithms = NULL;
     uint16_t eea = 0, eia = 0;
     uint8_t received_eea = 0, received_eia = 0;
+    bool ue_security_capability_mismatch = false;
 
     enb_ue_t *enb_ue = NULL;
     mme_ue_t *mme_ue = NULL;
@@ -2831,24 +2834,22 @@ void s1ap_handle_path_switch_request(
             ogs_plmn_id_hexdump(&mme_ue->e_cgi.plmn_id),
             mme_ue->e_cgi.cell_id);
 
-    /* Update ENB-UE-S1AP-ID */
-    enb_ue->enb_ue_s1ap_id = *ENB_UE_S1AP_ID;
-
-    /* Change enb_ue to the NEW eNB */
-    enb_ue_switch_to_enb(enb_ue, enb);
-
-    ogs_info("    NEW ENB_UE_S1AP_ID[%d] MME_UE_S1AP_ID[%d]",
-            enb_ue->enb_ue_s1ap_id, enb_ue->mme_ue_s1ap_id);
+    if (!UESecurityCapabilities) {
+        ogs_error("No UESecurityCapabilities");
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
+                S1AP_Cause_PR_protocol, S1AP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return;
+    }
 
     pLMNidentity = &TAI->pLMNidentity;
     if (pLMNidentity->size != sizeof(enb_ue->saved.tai.plmn_id)) {
         ogs_error("Invalid pLMNidentity->size = %d (expected %d)",
                 (int)pLMNidentity->size,
                 (int)sizeof(enb_ue->saved.tai.plmn_id));
-        r = s1ap_send_error_indication1(
-                enb_ue,
-                S1AP_Cause_PR_protocol,
-                S1AP_CauseProtocol_semantic_error);
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
+                S1AP_Cause_PR_protocol, S1AP_CauseProtocol_semantic_error);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2857,28 +2858,20 @@ void s1ap_handle_path_switch_request(
     if (tAC->size != sizeof(enb_ue->saved.tai.tac)) {
         ogs_error("Invalid tAC->size = %d (expected %d)",
                 (int)tAC->size, (int)sizeof(enb_ue->saved.tai.tac));
-        r = s1ap_send_error_indication1(
-                enb_ue,
-                S1AP_Cause_PR_protocol,
-                S1AP_CauseProtocol_semantic_error);
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
+                S1AP_Cause_PR_protocol, S1AP_CauseProtocol_semantic_error);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
     }
-    memcpy(&enb_ue->saved.tai.plmn_id, pLMNidentity->buf,
-            sizeof(enb_ue->saved.tai.plmn_id));
-    memcpy(&enb_ue->saved.tai.tac, tAC->buf, sizeof(enb_ue->saved.tai.tac));
-    enb_ue->saved.tai.tac = be16toh(enb_ue->saved.tai.tac);
 
     pLMNidentity = &EUTRAN_CGI->pLMNidentity;
     if (pLMNidentity->size != sizeof(enb_ue->saved.e_cgi.plmn_id)) {
         ogs_error("Invalid pLMNidentity->size = %d (expected %d)",
                 (int)pLMNidentity->size,
                 (int)sizeof(enb_ue->saved.e_cgi.plmn_id));
-        r = s1ap_send_error_indication1(
-                enb_ue,
-                S1AP_Cause_PR_protocol,
-                S1AP_CauseProtocol_semantic_error);
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
+                S1AP_Cause_PR_protocol, S1AP_CauseProtocol_semantic_error);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2888,34 +2881,13 @@ void s1ap_handle_path_switch_request(
         ogs_error("Invalid cell_ID->size = %d (expected %d)",
                 (int)cell_ID->size,
                 (int)sizeof(enb_ue->saved.e_cgi.cell_id));
-        r = s1ap_send_error_indication1(
-                enb_ue,
-                S1AP_Cause_PR_protocol,
-                S1AP_CauseProtocol_semantic_error);
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
+                S1AP_Cause_PR_protocol, S1AP_CauseProtocol_semantic_error);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
     }
-    memcpy(&enb_ue->saved.e_cgi.plmn_id, pLMNidentity->buf,
-            sizeof(enb_ue->saved.e_cgi.plmn_id));
-    memcpy(&enb_ue->saved.e_cgi.cell_id, cell_ID->buf,
-            sizeof(enb_ue->saved.e_cgi.cell_id));
-    enb_ue->saved.e_cgi.cell_id = (be32toh(enb_ue->saved.e_cgi.cell_id) >> 4);
 
-    ogs_info("    TAI[PLMN_ID:%06x,TAC:%d]",
-            ogs_plmn_id_hexdump(&enb_ue->saved.tai.plmn_id),
-            enb_ue->saved.tai.tac);
-    ogs_info("    E_CGI[PLMN_ID:%06x,CELL_ID:0x%x]",
-            ogs_plmn_id_hexdump(&enb_ue->saved.e_cgi.plmn_id),
-            enb_ue->saved.e_cgi.cell_id);
-
-    /* Copy Stream-No/TAI/ECGI from enb_ue */
-    mme_ue->enb_ostream_id = enb_ue->enb_ostream_id;
-    memcpy(&mme_ue->tai, &enb_ue->saved.tai, sizeof(ogs_eps_tai_t));
-    memcpy(&mme_ue->e_cgi, &enb_ue->saved.e_cgi, sizeof(ogs_e_cgi_t));
-    mme_ue->ue_location_timestamp = ogs_time_now();
-
-    ogs_assert(UESecurityCapabilities);
     encryptionAlgorithms =
         &UESecurityCapabilities->encryptionAlgorithms;
     integrityProtectionAlgorithms =
@@ -2925,10 +2897,9 @@ void s1ap_handle_path_switch_request(
         ogs_error("Invalid encryptionAlgorithms->size = %d (expected %d)",
                 (int)encryptionAlgorithms->size,
                 (int)sizeof(eea));
-        r = s1ap_send_error_indication1(
-                enb_ue,
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
                 S1AP_Cause_PR_protocol,
-                S1AP_CauseProtocol_semantic_error);
+                S1AP_CauseProtocol_message_not_compatible_with_receiver_state);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2954,10 +2925,9 @@ void s1ap_handle_path_switch_request(
                 "(expected %d)",
                 (int)integrityProtectionAlgorithms->size,
                 (int)sizeof(eia));
-        r = s1ap_send_error_indication1(
-                enb_ue,
+        r = s1ap_send_error_indication(enb, MME_UE_S1AP_ID, ENB_UE_S1AP_ID,
                 S1AP_Cause_PR_protocol,
-                S1AP_CauseProtocol_semantic_error);
+                S1AP_CauseProtocol_message_not_compatible_with_receiver_state);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2968,6 +2938,47 @@ void s1ap_handle_path_switch_request(
 
     if (received_eea != (mme_ue->ue_network_capability.eea & 0x7f) ||
         received_eia != (mme_ue->ue_network_capability.eia & 0x7f)) {
+        ue_security_capability_mismatch = true;
+    }
+
+    /* Update ENB-UE-S1AP-ID */
+    enb_ue->enb_ue_s1ap_id = *ENB_UE_S1AP_ID;
+
+    /* Change enb_ue to the NEW eNB after mandatory IE validation */
+    enb_ue_switch_to_enb(enb_ue, enb);
+
+    ogs_info("    NEW ENB_UE_S1AP_ID[%d] MME_UE_S1AP_ID[%d]",
+            enb_ue->enb_ue_s1ap_id, enb_ue->mme_ue_s1ap_id);
+
+    pLMNidentity = &TAI->pLMNidentity;
+    memcpy(&enb_ue->saved.tai.plmn_id, pLMNidentity->buf,
+            sizeof(enb_ue->saved.tai.plmn_id));
+    tAC = &TAI->tAC;
+    memcpy(&enb_ue->saved.tai.tac, tAC->buf, sizeof(enb_ue->saved.tai.tac));
+    enb_ue->saved.tai.tac = be16toh(enb_ue->saved.tai.tac);
+
+    pLMNidentity = &EUTRAN_CGI->pLMNidentity;
+    memcpy(&enb_ue->saved.e_cgi.plmn_id, pLMNidentity->buf,
+            sizeof(enb_ue->saved.e_cgi.plmn_id));
+    cell_ID = &EUTRAN_CGI->cell_ID;
+    memcpy(&enb_ue->saved.e_cgi.cell_id, cell_ID->buf,
+            sizeof(enb_ue->saved.e_cgi.cell_id));
+    enb_ue->saved.e_cgi.cell_id = (be32toh(enb_ue->saved.e_cgi.cell_id) >> 4);
+
+    ogs_info("    TAI[PLMN_ID:%06x,TAC:%d]",
+            ogs_plmn_id_hexdump(&enb_ue->saved.tai.plmn_id),
+            enb_ue->saved.tai.tac);
+    ogs_info("    E_CGI[PLMN_ID:%06x,CELL_ID:0x%x]",
+            ogs_plmn_id_hexdump(&enb_ue->saved.e_cgi.plmn_id),
+            enb_ue->saved.e_cgi.cell_id);
+
+    /* Copy Stream-No/TAI/ECGI from enb_ue */
+    mme_ue->enb_ostream_id = enb_ue->enb_ostream_id;
+    memcpy(&mme_ue->tai, &enb_ue->saved.tai, sizeof(ogs_eps_tai_t));
+    memcpy(&mme_ue->e_cgi, &enb_ue->saved.e_cgi, sizeof(ogs_e_cgi_t));
+    mme_ue->ue_location_timestamp = ogs_time_now();
+
+    if (ue_security_capability_mismatch) {
         mme_ue->send_ue_security_capability_in_path_switch_ack = true;
 
         ogs_warn("[%s] UE Security Capability mismatch in "
@@ -2979,10 +2990,6 @@ void s1ap_handle_path_switch_request(
         ogs_warn("    Received EEA[0x%x] EIA[0x%x]",
                 received_eea, received_eia);
     }
-
-    /* Update Security Context (NextHop) */
-    mme_ue->nhcc++;
-    ogs_kdf_nh_enb(mme_ue->kasme, mme_ue->nh, mme_ue->nh);
 
     ogs_list_init(&mme_ue->bearer_to_modify_list);
 
@@ -3072,6 +3079,18 @@ void s1ap_handle_path_switch_request(
         else
             ogs_warn("Bearer [%d] Duplicated", (int)e_rab->e_RAB_ID);
     }
+
+    /*
+     * Update Security Context (NextHop)
+     *
+     * Defer NH/NCC derivation until every E-RAB in the PathSwitchRequest
+     * has been validated. An unknown E-RAB ID (or malformed GTP-TEID /
+     * transportLayerAddress) returns an ErrorIndication in the loop above;
+     * advancing the NextHop chain before that point would desynchronize
+     * the {NH, NCC} with the eNB with no rollback (TS 33.401 7.2.8).
+     */
+    mme_ue->nhcc++;
+    ogs_kdf_nh_enb(mme_ue->kasme, mme_ue->nh, mme_ue->nh);
 
     relocation = sgw_ue_check_if_relocated(mme_ue);
     if (relocation == SGW_WITHOUT_RELOCATION) {

@@ -2727,6 +2727,30 @@ void ogs_sbi_xact_remove(ogs_sbi_xact_t *xact)
         ogs_free(xact->target_apiroot);
 
     /*
+     * Detach from the originating stream's xact_list, if attached.
+     *
+     * Two paths reach here:
+     *
+     *   (a) Normal completion: a response arrived (or the send
+     *       failed early) and the NF calls ogs_sbi_xact_remove().
+     *       xact_detach() unlinks via the cached to_stream_list
+     *       head in O(1), no stream lookup needed.
+     *
+     *   (b) Stream close: stream_remove_xact_all() (or its MHD
+     *       counterpart) walks the stream's xact_list and calls
+     *       ogs_sbi_xact_remove() on each entry. This detach runs
+     *       first and unlinks the node before the for_each_safe
+     *       iterator advances; the iterator's cached "next" pointer
+     *       keeps the loop sound.
+     *
+     * Idempotent for transactions that never had an inbound stream
+     * (NRF discovery initiated by the NF itself, status
+     * notifications): to_stream_list stays NULL and the helper is
+     * a no-op.
+     */
+    ogs_sbi_server_detach_xact(xact);
+
+    /*
      * Release optional user context attached to the transaction.
      * The transaction owns this memory and is responsible for
      * freeing it when the transaction is destroyed.
@@ -2809,7 +2833,12 @@ ogs_sbi_subscription_data_t *ogs_sbi_subscription_data_add(void)
     ogs_sbi_subscription_data_t *subscription_data = NULL;
 
     ogs_pool_alloc(&subscription_data_pool, &subscription_data);
-    ogs_assert(subscription_data);
+    if (!subscription_data) {
+        ogs_error("OVERFLOW subscription_data_pool [pool:%llu]",
+                (unsigned long long)ogs_app()->pool.subscription);
+        return NULL;
+    }
+
     memset(subscription_data, 0, sizeof(ogs_sbi_subscription_data_t));
 
     ogs_list_add(&ogs_sbi_self()->subscription_data_list, subscription_data);

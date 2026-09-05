@@ -502,7 +502,14 @@ bool nrf_nnrf_handle_nf_status_subscribe(
     ogs_uuid_format(id, &uuid);
 
     subscription_data = ogs_sbi_subscription_data_add();
-    ogs_assert(subscription_data);
+    if (!subscription_data) {
+        ogs_error("ogs_sbi_subscription_data_add() failed");
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(
+                stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                recvmsg, "No subscription data available", NULL, NULL));
+        return false;
+    }
 
     ogs_sbi_subscription_data_set_id(subscription_data, id);
     ogs_assert(subscription_data->id);
@@ -616,7 +623,19 @@ bool nrf_nnrf_handle_nf_status_subscribe(
     if (!client) {
         ogs_debug("%s: ogs_sbi_client_add()", OGS_FUNC);
         client = ogs_sbi_client_add(scheme, fqdn, fqdn_port, addr, addr6);
-        ogs_assert(client);
+        if (!client) {
+            ogs_error("ogs_sbi_client_add() failed");
+            ogs_assert(true ==
+                ogs_sbi_server_send_error(
+                    stream, OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR,
+                    recvmsg, "No SBI client available",
+                    subscription_data->notification_uri, NULL));
+            ogs_free(fqdn);
+            ogs_freeaddrinfo(addr);
+            ogs_freeaddrinfo(addr6);
+            ogs_sbi_subscription_data_remove(subscription_data);
+            return false;
+        }
     }
     OGS_SBI_SETUP_CLIENT(subscription_data, client);
 
@@ -1301,10 +1320,6 @@ bool nrf_nnrf_handle_nf_discover(
                     ogs_error("Invalid hnrf-uri [%s]",
                             discovery_option->hnrf_uri);
 
-                    ogs_free(fqdn);
-                    ogs_freeaddrinfo(addr);
-                    ogs_freeaddrinfo(addr6);
-
                     ogs_sbi_nf_instance_remove(nf_instance);
 
                     ogs_assert(true == ogs_sbi_server_send_error(
@@ -1438,32 +1453,53 @@ static int discover_handler(
         int status, ogs_sbi_response_t *response, void *data)
 {
     int rv;
+    int ret = OGS_OK;
     ogs_sbi_message_t message;
 
     nrf_assoc_t *assoc = data;
     ogs_sbi_stream_t *stream = NULL;
 
     ogs_assert(assoc);
-    stream = assoc->stream;
-    ogs_assert(stream);
+
+    /*
+     * Zero-init so the unified cleanup: below can always call
+     * ogs_sbi_message_free() unconditionally. The free function
+     * is fully NULL-guarded per field, and ogs_sbi_parse_response()
+     * (via parse_header()) zeroes the struct itself on entry,
+     * so this single initialization covers every goto cleanup path.
+     */
+    memset(&message, 0, sizeof(message));
+
+    /*
+     * Resolve the originating inbound stream (GH#4476).
+     *
+     * Per the lib/sbi/client.c callback convention:
+     *   status == OGS_OK              -> response is non-NULL
+     *   OGS_DONE / TIMEUP / ERROR     -> response is NULL
+     *
+     * The stream may already be gone if the original inter-PLMN
+     * client RST_STREAM'd or timed out before this (possibly
+     * delayed) Home-NRF reply arrived. All paths converge on
+     * cleanup: below, which dispatches over (stream, response).
+     */
+    stream = ogs_sbi_stream_find_by_id(assoc->stream_id);
 
     if (status != OGS_OK) {
-
         ogs_log_message(
                 status == OGS_DONE ? OGS_LOG_DEBUG : OGS_LOG_WARN, 0,
                 "response_handler() failed [%d]", status);
-
-        ogs_assert(true ==
-            ogs_sbi_server_send_error(stream,
-                OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
-                "response_handler() failed", NULL, NULL));
-
-        nrf_assoc_remove(assoc);
-
-        return OGS_ERROR;
+        ret = OGS_ERROR;
+        goto cleanup;
     }
 
     ogs_assert(response);
+
+    if (!stream) {
+        ogs_error("nnrf-disc: originating SBI stream already closed; "
+                "dropping delayed Home-NRF response [assoc_stream_id:%d]",
+                (int)assoc->stream_id);
+        goto cleanup;
+    }
 
     rv = ogs_sbi_parse_response(&message, response);
     if (rv != OGS_OK) {
@@ -1484,11 +1520,28 @@ static int discover_handler(
     handle_nf_discover_search_result(message.SearchResult);
 
 cleanup:
-    ogs_expect(true == ogs_sbi_server_send_response(stream, response));
-    nrf_assoc_remove(assoc);
-    ogs_sbi_message_free(&message);
+    /*
+     * Dispatch over (stream, response):
+     *   alive + resp  -> forward (proxy: parseable or not)
+     *   alive + null  -> synthesize HTTP 500
+     *   gone  + resp  -> drop orphaned response (#4476)
+     *   gone  + null  -> nothing to dispose
+     */
+    if (stream && response)
+        ogs_expect(true ==
+            ogs_sbi_server_send_response(stream, response));
+    else if (stream)
+        ogs_assert(true ==
+            ogs_sbi_server_send_error(stream,
+                OGS_SBI_HTTP_STATUS_INTERNAL_SERVER_ERROR, NULL,
+                "response_handler() failed", NULL, NULL));
+    else if (response)
+        ogs_sbi_response_free(response);
 
-    return OGS_OK;
+    ogs_sbi_message_free(&message);
+    nrf_assoc_remove(assoc);
+
+    return ret;
 }
 
 static void handle_nf_discover_search_result(
