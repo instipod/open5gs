@@ -124,7 +124,7 @@ void amf_nnrf_handle_nf_discover(
     ogs_sbi_nf_instance_t *nf_instance = NULL;
     ogs_sbi_object_t *sbi_object = NULL;
     ogs_pool_id_t sbi_object_id = OGS_INVALID_POOL_ID;
-    ogs_sbi_service_type_e service_type = OGS_SBI_SERVICE_TYPE_NULL;
+    OpenAPI_service_name_e service_name = OpenAPI_service_name_NULL;
     OpenAPI_nf_type_e target_nf_type = OpenAPI_nf_type_NULL;
     OpenAPI_nf_type_e requester_nf_type = OpenAPI_nf_type_NULL;
     ogs_sbi_discovery_option_t *discovery_option = NULL;
@@ -140,9 +140,9 @@ void amf_nnrf_handle_nf_discover(
     ogs_assert(xact);
     sbi_object = xact->sbi_object;
     ogs_assert(sbi_object);
-    service_type = xact->service_type;
-    ogs_assert(service_type);
-    target_nf_type = ogs_sbi_service_type_to_nf_type(service_type);
+    service_name = xact->service_name;
+    ogs_assert(service_name);
+    target_nf_type = ogs_sbi_service_name_to_nf_type(service_name);
     ogs_assert(target_nf_type);
     requester_nf_type = xact->requester_nf_type;
     ogs_assert(requester_nf_type);
@@ -156,6 +156,16 @@ void amf_nnrf_handle_nf_discover(
     SearchResult = recvmsg->SearchResult;
     if (!SearchResult) {
         ogs_error("No SearchResult");
+        amf_nnrf_handle_failed_amf_discovery(xact);
+        return;
+    }
+    if (!SearchResult->validity_period) {
+        ogs_error("No SearchResult->validity_period");
+        amf_nnrf_handle_failed_amf_discovery(xact);
+        return;
+    }
+    if (!SearchResult->nf_instances) {
+        ogs_error("No SearchResult->nf_instances");
         amf_nnrf_handle_failed_amf_discovery(xact);
         return;
     }
@@ -183,7 +193,7 @@ void amf_nnrf_handle_nf_discover(
          */
     } else {
         ogs_fatal("(NF discover) Not implemented [%s:%d]",
-            ogs_sbi_service_type_to_name(service_type), sbi_object->type);
+                OpenAPI_service_name_ToString(service_name), sbi_object->type);
         ogs_assert_if_reached();
     }
 
@@ -197,7 +207,7 @@ void amf_nnrf_handle_nf_discover(
         switch(sbi_object->type) {
         case OGS_SBI_OBJ_UE_TYPE:
             ogs_warn("[%s] (NF discover) No [%s]", amf_ue->suci,
-                        ogs_sbi_service_type_to_name(service_type));
+                    OpenAPI_service_name_ToString(service_name));
 
             if (amf_nnrf_try_old_amf_discovery_fallback(
                     amf_ue, requester_nf_type, discovery_option))
@@ -217,13 +227,14 @@ void amf_nnrf_handle_nf_discover(
             break;
         case OGS_SBI_OBJ_SESS_TYPE:
             ogs_warn("[%d:%d] (NF discover) No [%s]", sess->psi, sess->pti,
-                        ogs_sbi_service_type_to_name(service_type));
+                        OpenAPI_service_name_ToString(service_name));
 
             amf_nnrf_send_session_failure_to_ran(amf_ue, sess, ran_ue_id);
             break;
         default:
             ogs_fatal("(NF discover) Not implemented [%s:%d]",
-                ogs_sbi_service_type_to_name(service_type), sbi_object->type);
+                    OpenAPI_service_name_ToString(service_name),
+                    sbi_object->type);
             ogs_assert_if_reached();
         }
 
@@ -231,7 +242,7 @@ void amf_nnrf_handle_nf_discover(
     }
 
     OGS_SBI_SETUP_NF_INSTANCE(
-            sbi_object->service_type_array[service_type], nf_instance);
+            sbi_object->service_name_array[service_name], nf_instance);
 
     ogs_expect(true == amf_sbi_send_request(nf_instance, xact));
 }
@@ -243,7 +254,7 @@ void amf_nnrf_handle_failed_amf_discovery(
 
     OpenAPI_nf_type_e requester_nf_type = OpenAPI_nf_type_NULL;
     ogs_sbi_discovery_option_t *discovery_option = NULL;
-    ogs_sbi_service_type_e service_type = OGS_SBI_SERVICE_TYPE_NULL;
+    OpenAPI_service_name_e service_name = OpenAPI_service_name_NULL;
     ogs_sbi_object_t *sbi_object = NULL;
     ogs_pool_id_t sbi_object_id = OGS_INVALID_POOL_ID;
     ogs_pool_id_t ran_ue_id = OGS_INVALID_POOL_ID;
@@ -254,8 +265,8 @@ void amf_nnrf_handle_failed_amf_discovery(
     ogs_assert(sbi_xact);
     sbi_object = sbi_xact->sbi_object;
     ogs_assert(sbi_object);
-    service_type = sbi_xact->service_type;
-    ogs_assert(service_type);
+    service_name = sbi_xact->service_name;
+    ogs_assert(service_name);
     requester_nf_type = sbi_xact->requester_nf_type;
     ogs_assert(requester_nf_type);
 
@@ -328,7 +339,7 @@ void amf_nnrf_handle_failed_amf_discovery(
 
     default:
         ogs_fatal("Not implemented [%s:%d]",
-            ogs_sbi_service_type_to_name(service_type), sbi_object->type);
+                OpenAPI_service_name_ToString(service_name), sbi_object->type);
         ogs_assert_if_reached();
     }
 }

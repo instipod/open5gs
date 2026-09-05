@@ -862,9 +862,7 @@ static void stream_remove_xact_all(ogs_sbi_stream_t *stream)
         ogs_error("Canceling pending outbound SBI transaction "
                 "on HTTP/2 stream close [xact:%d,stream:%d,service:%s]",
                 (int)xact->id, stream->stream_id,
-                xact->service_type ?
-                    ogs_sbi_service_type_to_name(xact->service_type) :
-                    "NULL");
+                OpenAPI_service_name_ToString(xact->service_name));
         ogs_sbi_xact_remove(xact);
     }
 }

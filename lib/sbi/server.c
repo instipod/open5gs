@@ -278,9 +278,7 @@ int ogs_sbi_server_attach_xact(ogs_sbi_xact_t *xact)
         ogs_error("ogs_sbi_server_attach_xact: already attached "
                 "[xact:%d,assoc_stream_id:%d,service:%s]",
                 (int)xact->id, (int)xact->assoc_stream_id,
-                xact->service_type ?
-                    ogs_sbi_service_type_to_name(xact->service_type) :
-                    "NULL");
+                OpenAPI_service_name_ToString(xact->service_name));
         return OGS_OK;
     }
 
@@ -327,9 +325,7 @@ int ogs_sbi_server_attach_xact(ogs_sbi_xact_t *xact)
                 "already closed "
                 "[xact:%d,assoc_stream_id:%d,service:%s]",
                 (int)xact->id, (int)xact->assoc_stream_id,
-                xact->service_type ?
-                    ogs_sbi_service_type_to_name(xact->service_type) :
-                    "NULL");
+                OpenAPI_service_name_ToString(xact->service_name));
         return OGS_NOTFOUND;
     }
 

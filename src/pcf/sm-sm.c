@@ -37,6 +37,7 @@ void pcf_sm_state_final(ogs_fsm_t *s, pcf_event_t *e)
 
 void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
 {
+    int service_name_id = OpenAPI_service_name_NULL;
     bool handled;
     pcf_ue_sm_t *pcf_ue_sm = NULL;
     pcf_sess_t *sess = NULL;
@@ -76,8 +77,10 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             break;
         }
 
-        SWITCH(message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_SMPOLICYCONTROL)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_npcf_smpolicycontrol:
             if (!message->h.resource.component[1]) {
                 handled = pcf_npcf_smpolicycontrol_handle_create(
                         sess, stream, message);
@@ -125,7 +128,7 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             }
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_POLICYAUTHORIZATION)
+        case OpenAPI_service_name_npcf_policyauthorization:
             if (message->h.resource.component[1]) {
                 if (message->h.resource.component[2]) {
                     SWITCH(message->h.resource.component[2])
@@ -188,11 +191,11 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             }
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
                         pcf_ue_sm->supi, sess->psi, message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
 
     case OGS_EVENT_SBI_CLIENT:
@@ -209,8 +212,10 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             break;
         }
 
-        SWITCH(message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NUDR_DR)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nudr_dr:
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_POLICY_DATA)
                 SWITCH(message->h.resource.component[1])
@@ -281,7 +286,7 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NBSF_MANAGEMENT)
+        case OpenAPI_service_name_nbsf_management:
             SWITCH(message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_PCF_BINDINGS)
                 if (message->h.resource.component[1]) {
@@ -356,11 +361,11 @@ void pcf_sm_state_operational(ogs_fsm_t *s, pcf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
                         pcf_ue_sm->supi, sess->psi, message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
 
     default:

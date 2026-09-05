@@ -68,9 +68,26 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
 
     rv = OGS_ERROR;
 
-    dLQosFlowPerTNLInformation = &message.dLQosFlowPerTNLInformation;
+    dLQosFlowPerTNLInformation = message.dLQosFlowPerTNLInformation;
+    if (!dLQosFlowPerTNLInformation) {
+        ogs_error("[%s:%d] No DLQosFlowPerTNLInformation",
+                smf_ue->supi, sess->psi);
+        smf_sbi_send_sm_context_update_error_log(
+                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                "No DLQosFlowPerTNLInformation", smf_ue->supi);
+        goto cleanup;
+    }
+
     uPTransportLayerInformation =
-        &dLQosFlowPerTNLInformation->uPTransportLayerInformation;
+        dLQosFlowPerTNLInformation->uPTransportLayerInformation;
+    if (!uPTransportLayerInformation) {
+        ogs_error("[%s:%d] No UPTransportLayerInformation",
+                smf_ue->supi, sess->psi);
+        smf_sbi_send_sm_context_update_error_log(
+                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                "No UPTransportLayerInformation", smf_ue->supi);
+        goto cleanup;
+    }
 
     if (uPTransportLayerInformation->present !=
         NGAP_UPTransportLayerInformation_PR_gTPTunnel) {
@@ -149,11 +166,19 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
         }
     } else {
         associatedQosFlowList =
-            &dLQosFlowPerTNLInformation->associatedQosFlowList;
-        for (i = 0; i < associatedQosFlowList->list.count; i++) {
+            dLQosFlowPerTNLInformation->associatedQosFlowList;
+        if (!associatedQosFlowList) {
+            ogs_error("[%s:%d] No AssociatedQosFlowList",
+                    smf_ue->supi, sess->psi);
+            smf_sbi_send_sm_context_update_error_log(
+                    stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    "No AssociatedQosFlowList", smf_ue->supi);
+            goto cleanup;
+        }
+
+        for (i = 0; i < OGS_ASN_LIST_COUNT(associatedQosFlowList); i++) {
             NGAP_AssociatedQosFlowItem_t *associatedQosFlowItem = NULL;
-            associatedQosFlowItem = (NGAP_AssociatedQosFlowItem_t *)
-                    associatedQosFlowList->list.array[i];
+            associatedQosFlowItem = OGS_ASN_LIST_GET(associatedQosFlowList, i);
 
             if (associatedQosFlowItem) {
                 qos_flow = smf_qos_flow_find_by_qfi(
@@ -261,7 +286,7 @@ int ngap_handle_pdu_session_resource_setup_response_transfer(
             sess->nsmf_param.rat_type = sess->sbi_rat_type;
 
             r = smf_sbi_discover_and_send(
-                    OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                    OpenAPI_service_name_nsmf_pdusession, NULL,
                     smf_nsmf_pdusession_build_hsmf_update_data, sess, stream,
                     sess->up_cnx_state == OpenAPI_up_cnx_state_ACTIVATING ?
                         SMF_UPDATE_STATE_ACTIVATED_FROM_ACTIVATING :
@@ -320,7 +345,14 @@ int ngap_handle_pdu_session_resource_setup_unsuccessful_transfer(
 
     rv = OGS_ERROR;
 
-    Cause = &message.cause;
+    Cause = message.cause;
+    if (!Cause) {
+        ogs_error("[%s:%d] No Cause", smf_ue->supi, sess->psi);
+        smf_sbi_send_sm_context_update_error_log(
+                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                "No Cause", smf_ue->supi);
+        goto cleanup;
+    }
 
     if (Cause->present == NGAP_Cause_PR_radioNetwork &&
         Cause->choice.radioNetwork ==
@@ -360,7 +392,7 @@ int ngap_handle_pdu_session_resource_setup_unsuccessful_transfer(
         sess->nsmf_param.ngap_cause.value = (int)Cause->choice.radioNetwork;
 
         r = smf_sbi_discover_and_send(
-                OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                OpenAPI_service_name_nsmf_pdusession, NULL,
                 smf_nsmf_pdusession_build_hsmf_update_data,
                 sess, stream, SMF_UPDATE_STATE_DEACTIVATED, NULL);
         ogs_expect(r == OGS_OK);
@@ -482,12 +514,12 @@ int ngap_handle_pdu_session_resource_modify_response_transfer(
     ogs_list_init(&sess->qos_flow_to_modify_list);
 
     if (qosFlowAddOrModifyResponseList) {
-        for (i = 0; i < qosFlowAddOrModifyResponseList->list.count; i++) {
+        for (i = 0; i < OGS_ASN_LIST_COUNT(qosFlowAddOrModifyResponseList);
+                i++) {
             NGAP_QosFlowAddOrModifyResponseItem_t
                 *qosFlowAddOrModifyResponseItem = NULL;
             qosFlowAddOrModifyResponseItem =
-                (NGAP_QosFlowAddOrModifyResponseItem_t *)
-                    qosFlowAddOrModifyResponseList->list.array[i];
+                OGS_ASN_LIST_GET(qosFlowAddOrModifyResponseList, i);
 
             if (qosFlowAddOrModifyResponseItem) {
                 qos_flow = smf_qos_flow_find_by_qfi(sess,
@@ -575,7 +607,16 @@ int ngap_handle_path_switch_request_transfer(
 
     rv = OGS_ERROR;
 
-    dL_NGU_UP_TNLInformation = &message.dL_NGU_UP_TNLInformation;
+    dL_NGU_UP_TNLInformation = message.dL_NGU_UP_TNLInformation;
+    if (!dL_NGU_UP_TNLInformation) {
+        ogs_error("[%s:%d] No DL-NGU-UP-TNLInformation",
+                smf_ue->supi, sess->psi);
+        smf_sbi_send_sm_context_update_error_log(
+                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                "No DL-NGU-UP-TNLInformation", smf_ue->supi);
+        goto cleanup;
+    }
+
     if (dL_NGU_UP_TNLInformation->present !=
         NGAP_UPTransportLayerInformation_PR_gTPTunnel) {
         ogs_error(
@@ -640,10 +681,18 @@ int ngap_handle_path_switch_request_transfer(
             num_of_qos_flow_modified++;
         }
     } else {
-        qosFlowAcceptedList = &message.qosFlowAcceptedList;
-        for (i = 0; i < qosFlowAcceptedList->list.count; i++) {
-            acceptedQosFlowItem = (NGAP_QosFlowAcceptedItem_t *)
-                    qosFlowAcceptedList->list.array[i];
+        qosFlowAcceptedList = message.qosFlowAcceptedList;
+        if (!qosFlowAcceptedList) {
+            ogs_error("[%s:%d] No QosFlowAcceptedList",
+                    smf_ue->supi, sess->psi);
+            smf_sbi_send_sm_context_update_error_log(
+                    stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    "No QosFlowAcceptedList", smf_ue->supi);
+            goto cleanup;
+        }
+
+        for (i = 0; i < OGS_ASN_LIST_COUNT(qosFlowAcceptedList); i++) {
+            acceptedQosFlowItem = OGS_ASN_LIST_GET(qosFlowAcceptedList, i);
             if (acceptedQosFlowItem) {
                 smf_bearer_t *qos_flow = smf_qos_flow_find_by_qfi(
                         sess, acceptedQosFlowItem->qosFlowIdentifier);
@@ -715,7 +764,7 @@ int ngap_handle_path_switch_request_transfer(
             sess->nsmf_param.rat_type = sess->sbi_rat_type;
 
             r = smf_sbi_discover_and_send(
-                    OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                    OpenAPI_service_name_nsmf_pdusession, NULL,
                     smf_nsmf_pdusession_build_hsmf_update_data, sess, stream,
                     SMF_UPDATE_STATE_ACTIVATED_FROM_XN_HANDOVER,
                     NULL);
@@ -827,7 +876,16 @@ int ngap_handle_handover_request_ack(
 
     rv = OGS_ERROR;
 
-    dL_NGU_UP_TNLInformation = &message.dL_NGU_UP_TNLInformation;
+    dL_NGU_UP_TNLInformation = message.dL_NGU_UP_TNLInformation;
+    if (!dL_NGU_UP_TNLInformation) {
+        ogs_error("[%s:%d] No DL-NGU-UP-TNLInformation",
+                smf_ue->supi, sess->psi);
+        smf_sbi_send_sm_context_update_error_log(
+                stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                "No DL-NGU-UP-TNLInformation", smf_ue->supi);
+        goto cleanup;
+    }
+
     if (dL_NGU_UP_TNLInformation->present !=
         NGAP_UPTransportLayerInformation_PR_gTPTunnel) {
         ogs_error(
@@ -878,10 +936,19 @@ int ngap_handle_handover_request_ack(
             dl_far->handover.prepared = true;
         }
     } else {
-        qosFlowSetupResponseList = &message.qosFlowSetupResponseList;
-        for (i = 0; i < qosFlowSetupResponseList->list.count; i++) {
-            qosFlowSetupResponseItem = (NGAP_QosFlowItemWithDataForwarding_t *)
-                    qosFlowSetupResponseList->list.array[i];
+        qosFlowSetupResponseList = message.qosFlowSetupResponseList;
+        if (!qosFlowSetupResponseList) {
+            ogs_error("[%s:%d] No QosFlowSetupResponseList",
+                    smf_ue->supi, sess->psi);
+            smf_sbi_send_sm_context_update_error_log(
+                    stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                    "No QosFlowSetupResponseList", smf_ue->supi);
+            goto cleanup;
+        }
+
+        for (i = 0; i < OGS_ASN_LIST_COUNT(qosFlowSetupResponseList); i++) {
+            qosFlowSetupResponseItem =
+                OGS_ASN_LIST_GET(qosFlowSetupResponseList, i);
             if (qosFlowSetupResponseItem) {
                 smf_bearer_t *qos_flow = smf_qos_flow_find_by_qfi(
                         sess, qosFlowSetupResponseItem->qosFlowIdentifier);

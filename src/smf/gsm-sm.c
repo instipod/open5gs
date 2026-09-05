@@ -220,6 +220,7 @@ void smf_gsm_state_initial(ogs_fsm_t *s, smf_event_t *e)
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *sbi_message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -314,8 +315,10 @@ void smf_gsm_state_initial(ogs_fsm_t *s, smf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nsmf_pdusession:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SM_CONTEXTS)
                 SWITCH(sbi_message->h.resource.component[2])
@@ -383,7 +386,7 @@ void smf_gsm_state_initial(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("Invalid API name [%s]", sbi_message->h.service.name);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
@@ -391,7 +394,7 @@ void smf_gsm_state_initial(ogs_fsm_t *s, smf_event_t *e)
                     "Invalid API name", sbi_message->h.service.name,
                     NULL));
             OGS_FSM_TRAN(s, smf_gsm_state_exception);
-        END
+        }
         break;
 
     case SMF_EVT_5GSM_MESSAGE:
@@ -576,6 +579,7 @@ void smf_gsm_state_wait_5gc_sm_policy_association(ogs_fsm_t *s, smf_event_t *e)
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *sbi_message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -598,8 +602,10 @@ void smf_gsm_state_wait_5gc_sm_policy_association(ogs_fsm_t *s, smf_event_t *e)
         smf_ue = smf_ue_find_by_id(sess->smf_ue_id);
         ogs_assert(smf_ue);
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NUDM_SDM)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nudm_sdm:
             stream_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             ogs_assert(stream_id >= OGS_MIN_POOL_ID &&
                     stream_id <= OGS_MAX_POOL_ID);
@@ -679,7 +685,7 @@ void smf_gsm_state_wait_5gc_sm_policy_association(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_SMPOLICYCONTROL)
+        case OpenAPI_service_name_npcf_smpolicycontrol:
             /*
              * TS23.502
              * 4.3.2.2 UE Requested PDU Session Establishment
@@ -742,11 +748,11 @@ void smf_gsm_state_wait_5gc_sm_policy_association(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
                     smf_ue->supi, sess->psi, sbi_message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
 
     default:
@@ -854,14 +860,14 @@ void smf_gsm_state_wait_pfcp_establishment(ogs_fsm_t *s, smf_event_t *e)
                 }
                 if (HOME_ROUTED_ROAMING_IN_VSMF(sess)) {
                     r = smf_sbi_discover_and_send(
-                            OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                            OpenAPI_service_name_nsmf_pdusession, NULL,
                             smf_nsmf_pdusession_build_create_data,
                             sess, NULL, 0, NULL);
                     ogs_expect(r == OGS_OK);
                     ogs_assert(r != OGS_ERROR);
                 } else if (HOME_ROUTED_ROAMING_IN_HSMF(sess)) {
                     r = smf_sbi_discover_and_send(
-                            OGS_SBI_SERVICE_TYPE_NUDM_UECM, NULL,
+                            OpenAPI_service_name_nudm_uecm, NULL,
                             smf_nudm_uecm_build_registration,
                             sess, stream,
                             SMF_UECM_STATE_REGISTERED_HR,
@@ -939,6 +945,7 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *sbi_message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_gtp_xact_t *gtp_xact = NULL;
     ogs_gtp1_message_t *gtp1_message = NULL;
@@ -1092,8 +1099,10 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nsmf_pdusession:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SM_CONTEXTS)
                 SWITCH(sbi_message->h.resource.component[2])
@@ -1580,7 +1589,7 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("Invalid API name [%s]", sbi_message->h.service.name);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
@@ -1588,7 +1597,7 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     "Invalid API name", sbi_message->h.service.name,
                     NULL));
             OGS_FSM_TRAN(s, smf_gsm_state_exception);
-        END
+        }
         break;
 
     case OGS_EVENT_SBI_CLIENT:
@@ -1602,8 +1611,10 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
         if (stream_id >= OGS_MIN_POOL_ID && stream_id <= OGS_MAX_POOL_ID)
             stream = ogs_sbi_stream_find_by_id(stream_id);
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NAMF_COMM)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_namf_comm:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_UE_CONTEXTS)
                 smf_namf_comm_handle_n1_n2_message_transfer(
@@ -1618,7 +1629,7 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        case OpenAPI_service_name_nsmf_pdusession:
             stream_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             if (stream_id >= OGS_MIN_POOL_ID && stream_id <= OGS_MAX_POOL_ID)
                 stream = ogs_sbi_stream_find_by_id(stream_id);
@@ -1882,11 +1893,11 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
                     smf_ue->supi, sess->psi, sbi_message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
 
     case SMF_EVT_5GSM_MESSAGE:
@@ -1912,7 +1923,7 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     OpenAPI_request_indication_UE_REQ_PDU_SES_MOD;
 
                 r = smf_sbi_discover_and_send(
-                        OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                        OpenAPI_service_name_nsmf_pdusession, NULL,
                         smf_nsmf_pdusession_build_hsmf_update_data,
                         sess, stream, SMF_UPDATE_STATE_UE_REQ_MOD, NULL);
                 ogs_expect(r == OGS_OK);
@@ -2170,7 +2181,7 @@ void smf_gsm_state_operational(ogs_fsm_t *s, smf_event_t *e)
                     OpenAPI_request_indication_NW_REQ_PDU_SES_REL;
 
                 r = smf_sbi_discover_and_send(
-                        OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                        OpenAPI_service_name_nsmf_pdusession, NULL,
                         smf_nsmf_pdusession_build_vsmf_update_data,
                         sess, NULL, e->h.sbi.state, NULL);
                 ogs_expect(r == OGS_OK);
@@ -2241,12 +2252,15 @@ void smf_gsm_state_wait_pfcp_deletion(ogs_fsm_t *s, smf_event_t *e)
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *sbi_message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_pfcp_xact_t *pfcp_xact = NULL;
     ogs_pfcp_message_t *pfcp_message = NULL;
 
     uint8_t pfcp_cause, gtp_cause;
     ogs_gtp_xact_t *gtp_xact = NULL;
+
+    ogs_pkbuf_t *n1smbuf = NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -2392,7 +2406,7 @@ void smf_gsm_state_wait_pfcp_deletion(ogs_fsm_t *s, smf_event_t *e)
                         }
 
                         r = smf_sbi_discover_and_send(
-                                OGS_SBI_SERVICE_TYPE_NSMF_PDUSESSION, NULL,
+                                OpenAPI_service_name_nsmf_pdusession, NULL,
                                 smf_nsmf_pdusession_build_vsmf_update_data,
                                 sess, NULL, trigger, NULL);
                         ogs_expect(r == OGS_OK);
@@ -2785,10 +2799,10 @@ void smf_gsm_state_wait_pfcp_deletion(ogs_fsm_t *s, smf_event_t *e)
         smf_ue = smf_ue_find_by_id(sess->smf_ue_id);
         ogs_assert(smf_ue);
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_SMPOLICYCONTROL)
-            ogs_pkbuf_t *n1smbuf = NULL;
-
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_npcf_smpolicycontrol:
             stream_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             ogs_assert(stream_id >= OGS_MIN_POOL_ID &&
                     stream_id <= OGS_MAX_POOL_ID);
@@ -2811,7 +2825,7 @@ void smf_gsm_state_wait_pfcp_deletion(ogs_fsm_t *s, smf_event_t *e)
                     stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
                     n1smbuf, OpenAPI_n2_sm_info_type_NULL, NULL);
             break;
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        case OpenAPI_service_name_nsmf_pdusession:
             stream_id = OGS_POINTER_TO_UINT(e->h.sbi.data);
             if (stream_id >= OGS_MIN_POOL_ID && stream_id <= OGS_MAX_POOL_ID)
                 stream = ogs_sbi_stream_find_by_id(stream_id);
@@ -2922,7 +2936,7 @@ void smf_gsm_state_wait_pfcp_deletion(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NAMF_COMM)
+        case OpenAPI_service_name_namf_comm:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_UE_CONTEXTS)
                 ogs_error("[%s:%d] Ignore SBI message "
@@ -2939,11 +2953,11 @@ void smf_gsm_state_wait_pfcp_deletion(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
                     smf_ue->supi, sess->psi, sbi_message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
     }
 }
@@ -3081,12 +3095,14 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
     smf_ue_t *smf_ue = NULL;
     smf_sess_t *sess = NULL;
     ogs_pkbuf_t *pkbuf = NULL;
+    ogs_pkbuf_t *n1smbuf = NULL;
 
     ogs_nas_5gs_message_t *nas_message = NULL;
 
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *sbi_message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     int r;
 
@@ -3121,8 +3137,10 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nsmf_pdusession:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SM_CONTEXTS)
                 SWITCH(sbi_message->h.resource.component[2])
@@ -3271,7 +3289,7 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("Invalid API name [%s]", sbi_message->h.service.name);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
@@ -3279,7 +3297,7 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
                     "Invalid API name", sbi_message->h.service.name,
                     NULL));
             OGS_FSM_TRAN(s, smf_gsm_state_exception);
-        END
+        }
         break;
 
     case OGS_EVENT_SBI_CLIENT:
@@ -3290,8 +3308,10 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
         if (stream_id >= OGS_MIN_POOL_ID && stream_id <= OGS_MAX_POOL_ID)
             stream = ogs_sbi_stream_find_by_id(stream_id);
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nsmf_pdusession:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_VSMF_PDU_SESSIONS)
                 SWITCH(sbi_message->h.method)
@@ -3368,7 +3388,7 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NAMF_COMM)
+        case OpenAPI_service_name_namf_comm:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_UE_CONTEXTS)
                 ogs_info("[%s:%d] state [%d] res_status [%d], stream [%p:%d]",
@@ -3387,9 +3407,7 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_SMPOLICYCONTROL)
-            ogs_pkbuf_t *n1smbuf = NULL;
-
+        case OpenAPI_service_name_npcf_smpolicycontrol:
             ogs_error("[%s:%d] state [%d] res_status [%d]",
                 smf_ue->supi, sess->psi,
                 e->h.sbi.state, sbi_message->res_status);
@@ -3403,7 +3421,7 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
                     n1smbuf, OpenAPI_n2_sm_info_type_NULL, NULL);
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NUDM_SDM)
+        case OpenAPI_service_name_nudm_sdm:
             SWITCH(sbi_message->h.resource.component[1])
             CASE(OGS_SBI_RESOURCE_NAME_SDM_SUBSCRIPTIONS)
                 SWITCH(sbi_message->h.method)
@@ -3432,11 +3450,11 @@ void smf_gsm_state_wait_5gc_n1_n2_release(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
                     smf_ue->supi, sess->psi, sbi_message->h.service.name);
             ogs_assert_if_reached();
-        END
+        }
         break;
 
     case SMF_EVT_NGAP_MESSAGE:
@@ -3696,6 +3714,7 @@ void smf_gsm_state_5gc_n1_n2_reject(ogs_fsm_t *s, smf_event_t *e)
     smf_ue_t *smf_ue = NULL;
     smf_sess_t *sess = NULL;
     ogs_sbi_message_t *sbi_message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     ogs_assert(s);
     ogs_assert(e);
@@ -3716,7 +3735,7 @@ void smf_gsm_state_5gc_n1_n2_reject(ogs_fsm_t *s, smf_event_t *e)
             sess->nsmf_param.ue_timezone = true;
 
             r = smf_sbi_discover_and_send(
-                    OGS_SBI_SERVICE_TYPE_NPCF_SMPOLICYCONTROL, NULL,
+                    OpenAPI_service_name_npcf_smpolicycontrol, NULL,
                     smf_npcf_smpolicycontrol_build_delete,
                     sess, NULL,
                     OGS_PFCP_DELETE_TRIGGER_AMF_UPDATE_SM_CONTEXT, NULL);
@@ -3735,8 +3754,10 @@ void smf_gsm_state_5gc_n1_n2_reject(ogs_fsm_t *s, smf_event_t *e)
         smf_ue = smf_ue_find_by_id(sess->smf_ue_id);
         ogs_assert(smf_ue);
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_SMPOLICYCONTROL)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_npcf_smpolicycontrol:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SM_POLICIES)
                 if (!sbi_message->h.resource.component[1]) {
@@ -3780,7 +3801,7 @@ void smf_gsm_state_5gc_n1_n2_reject(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NAMF_COMM)
+        case OpenAPI_service_name_namf_comm:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_UE_CONTEXTS)
                 OGS_FSM_TRAN(s, smf_gsm_state_session_will_release);
@@ -3794,11 +3815,11 @@ void smf_gsm_state_5gc_n1_n2_reject(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("[%s:%d] Invalid API name [%s]",
                     smf_ue->supi, sess->psi, sbi_message->h.service.name);
             OGS_FSM_TRAN(s, smf_gsm_state_exception);
-        END
+        }
         break;
 
     default:
@@ -3817,6 +3838,7 @@ void smf_gsm_state_5gc_session_will_deregister(ogs_fsm_t *s, smf_event_t *e)
     ogs_sbi_stream_t *stream = NULL;
     ogs_pool_id_t stream_id = OGS_INVALID_POOL_ID;
     ogs_sbi_message_t *sbi_message = NULL;
+    int service_name_id = OpenAPI_service_name_NULL;
 
     int r;
 
@@ -3849,8 +3871,10 @@ void smf_gsm_state_5gc_session_will_deregister(ogs_fsm_t *s, smf_event_t *e)
             break;
         }
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NSMF_PDUSESSION)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_nsmf_pdusession:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SM_CONTEXTS)
                 SWITCH(sbi_message->h.resource.component[2])
@@ -3882,7 +3906,7 @@ void smf_gsm_state_5gc_session_will_deregister(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("Invalid API name [%s]", sbi_message->h.service.name);
             ogs_assert(true ==
                 ogs_sbi_server_send_error(stream,
@@ -3890,7 +3914,7 @@ void smf_gsm_state_5gc_session_will_deregister(ogs_fsm_t *s, smf_event_t *e)
                     "Invalid API name", sbi_message->h.service.name,
                     NULL));
             OGS_FSM_TRAN(s, smf_gsm_state_exception);
-        END
+        }
         break;
 
     case OGS_EVENT_SBI_CLIENT:
@@ -3904,8 +3928,10 @@ void smf_gsm_state_5gc_session_will_deregister(ogs_fsm_t *s, smf_event_t *e)
         if (stream_id >= OGS_MIN_POOL_ID && stream_id <= OGS_MAX_POOL_ID)
             stream = ogs_sbi_stream_find_by_id(stream_id);
 
-        SWITCH(sbi_message->h.service.name)
-        CASE(OGS_SBI_SERVICE_NAME_NPCF_SMPOLICYCONTROL)
+        service_name_id = ogs_sbi_service_name_id_from_string(
+                sbi_message->h.service.name);
+        switch (service_name_id) {
+        case OpenAPI_service_name_npcf_smpolicycontrol:
             SWITCH(sbi_message->h.resource.component[0])
             CASE(OGS_SBI_RESOURCE_NAME_SM_POLICIES)
                 if (!sbi_message->h.resource.component[1]) {
@@ -3985,7 +4011,7 @@ void smf_gsm_state_5gc_session_will_deregister(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        CASE(OGS_SBI_SERVICE_NAME_NUDM_SDM)
+        case OpenAPI_service_name_nudm_sdm:
             SWITCH(sbi_message->h.resource.component[1])
             CASE(OGS_SBI_RESOURCE_NAME_SDM_SUBSCRIPTIONS)
                 SWITCH(sbi_message->h.method)
@@ -4014,9 +4040,9 @@ void smf_gsm_state_5gc_session_will_deregister(ogs_fsm_t *s, smf_event_t *e)
             END
             break;
 
-        DEFAULT
+        default:
             ogs_error("Invalid API name [%s]", sbi_message->h.service.name);
-        END
+        }
         break;
 
     default:
