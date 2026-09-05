@@ -121,8 +121,24 @@ bool nrf_nnrf_handle_nf_register(ogs_sbi_nf_instance_t *nf_instance,
         }
     }
 
-    ogs_nnrf_nfm_handle_nf_profile(nf_instance, NFProfile);
+    if (ogs_nnrf_nfm_handle_nf_profile(nf_instance, NFProfile) == false) {
+        ogs_error("[%s] Invalid NFProfile", NFProfile->nf_instance_id);
 
+        /*
+         * Do not finalize or remove nf_instance here. This handler is called
+         * from the NRF NF state machine. The caller performs OGS_FSM_TRAN()
+         * on &nf_instance->sm immediately after this function returns, so
+         * freeing nf_instance here would cause a use-after-free.
+         *
+         * Return failure and let the FSM dispatcher perform cleanup after the
+         * transition to nrf_nf_state_exception.
+         */
+        ogs_assert(true == ogs_sbi_server_send_error(
+            stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+            recvmsg, "Invalid NFProfile", NFProfile->nf_instance_id, NULL));
+
+        return false;
+    }
     ogs_sbi_client_associate(nf_instance);
 
     /* ---------------------------------------------------------- */
@@ -1243,7 +1259,13 @@ bool nrf_nnrf_handle_nf_discover(
 
         if (!nf_instance) {
             nf_instance = ogs_sbi_nf_instance_add();
-            ogs_assert(nf_instance);
+            if (!nf_instance) {
+                ogs_error("Can't add NRF instance due to insufficient space");
+                ogs_assert(true == ogs_sbi_server_send_error(
+                        stream, OGS_SBI_HTTP_STATUS_PAYLOAD_TOO_LARGE,
+                        recvmsg, "Insufficient space", NULL, NULL));
+                goto cleanup;
+            }
             ogs_sbi_nf_instance_set_type(nf_instance, OpenAPI_nf_type_NRF);
 
             /*
@@ -1275,9 +1297,22 @@ bool nrf_nnrf_handle_nf_discover(
                 rc = ogs_sbi_getaddr_from_uri(
                         &scheme, &fqdn, &fqdn_port, &addr, &addr6,
                         discovery_option->hnrf_uri);
-                if (rc == false || scheme == OpenAPI_uri_scheme_NULL)
-                    ogs_error("Invalid URL [%s]", request->h.uri);
-                else {
+                if (rc == false || scheme == OpenAPI_uri_scheme_NULL) {
+                    ogs_error("Invalid hnrf-uri [%s]",
+                            discovery_option->hnrf_uri);
+
+                    ogs_free(fqdn);
+                    ogs_freeaddrinfo(addr);
+                    ogs_freeaddrinfo(addr6);
+
+                    ogs_sbi_nf_instance_remove(nf_instance);
+
+                    ogs_assert(true == ogs_sbi_server_send_error(
+                            stream, OGS_SBI_HTTP_STATUS_BAD_REQUEST,
+                            recvmsg, "Invalid hnrf-uri",
+                            discovery_option->hnrf_uri, NULL));
+                    goto cleanup;
+                } else {
             /*
              * If there is an hnrf-uri, this value creates an nf-instance->fqdn,
              * which in turn creates a client->fqdn from the hnrf-uri.
@@ -1466,6 +1501,7 @@ static void handle_nf_discover_search_result(
 
     OpenAPI_list_for_each(SearchResult->nf_instances, node) {
         OpenAPI_nf_profile_t *NFProfile = NULL;
+        bool nf_instance_created = false;
 
         if (!node->data) continue;
 
@@ -1494,9 +1530,16 @@ static void handle_nf_discover_search_result(
         nf_instance = ogs_sbi_nf_instance_find(NFProfile->nf_instance_id);
         if (!nf_instance) {
             nf_instance = ogs_sbi_nf_instance_add();
-            ogs_assert(nf_instance);
+            if (!nf_instance) {
+                ogs_error("Can't add discovered NF instance [%s:%s] "
+                        "due to insufficient space",
+                        NFProfile->nf_instance_id,
+                        OpenAPI_nf_type_ToString(NFProfile->nf_type));
+                continue;
+            }
 
             ogs_sbi_nf_instance_set_id(nf_instance, NFProfile->nf_instance_id);
+            nf_instance_created = true;
 
             /*
              * If nrf_nf_fsm_init() is not executed, nf_instance->sm is NULL.
@@ -1516,7 +1559,24 @@ static void handle_nf_discover_search_result(
         }
 
         if (NF_INSTANCE_ID_IS_OTHERS(nf_instance->id)) {
-            ogs_nnrf_nfm_handle_nf_profile(nf_instance, NFProfile);
+            if (ogs_nnrf_nfm_handle_nf_profile(
+                        nf_instance, NFProfile) == false) {
+                ogs_error("[%s] (NF-discover) Invalid NFProfile [type:%s]",
+                        NFProfile->nf_instance_id,
+                        OpenAPI_nf_type_ToString(NFProfile->nf_type));
+
+                /*
+                 * Only roll back nf_instances we just created here. A
+                 * pre-existing cache entry will be corrected by the next
+                 * inter-NRF discovery cycle; removing it now would cause
+                 * a temporary blackhole. (No fsm_fini: this code path
+                 * never calls nrf_nf_fsm_init() for newly added entries
+                 * per the comment at line 1517-1522, so sm is NULL.)
+                 */
+                if (nf_instance_created)
+                    ogs_sbi_nf_instance_remove(nf_instance);
+                continue;
+            }
 
             ogs_sbi_client_associate(nf_instance);
 

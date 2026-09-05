@@ -115,6 +115,100 @@ static bool s_nssai_is_found(amf_gnb_t *gnb)
     return false;
 }
 
+
+static ran_ue_t *ngap_find_ran_ue_by_message_ue_ids(
+        amf_gnb_t *gnb, NGAP_AMF_UE_NGAP_ID_t *AMF_UE_NGAP_ID,
+        NGAP_RAN_UE_NGAP_ID_t *RAN_UE_NGAP_ID)
+{
+    int r;
+    uint64_t amf_ue_ngap_id;
+    ran_ue_t *ran_ue = NULL;
+
+    ogs_assert(gnb);
+
+    if (!RAN_UE_NGAP_ID) {
+        ogs_error("No RAN_UE_NGAP_ID");
+        r = ngap_send_error_indication(gnb, NULL, NULL,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return NULL;
+    }
+
+    if (!AMF_UE_NGAP_ID) {
+        ogs_error("No AMF_UE_NGAP_ID");
+        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return NULL;
+    }
+
+    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
+        ogs_error("Invalid AMF_UE_NGAP_ID");
+        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return NULL;
+    }
+
+    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
+        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
+                (long long)amf_ue_ngap_id);
+        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
+                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return NULL;
+    }
+
+    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    if (!ran_ue) {
+        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
+                (long long)amf_ue_ngap_id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return NULL;
+    }
+
+    if (ran_ue->gnb_id != gnb->id) {
+        ogs_error("AMF_UE_NGAP_ID[%lld] does not belong to this gNB "
+                "[UE:gNB-ID:%llu, Message:gNB-ID:%llu]",
+                (long long)amf_ue_ngap_id,
+                (unsigned long long)ran_ue->gnb_id,
+                (unsigned long long)gnb->id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return NULL;
+    }
+
+    if (ran_ue->ran_ue_ngap_id != *RAN_UE_NGAP_ID) {
+        ogs_error("Invalid RAN_UE_NGAP_ID[%lld] for "
+                "AMF_UE_NGAP_ID[%lld] [expected:%lld]",
+                (long long)*RAN_UE_NGAP_ID,
+                (long long)amf_ue_ngap_id,
+                (long long)ran_ue->ran_ue_ngap_id);
+        r = ngap_send_error_indication(
+                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
+                NGAP_Cause_PR_radioNetwork,
+                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+        ogs_expect(r == OGS_OK);
+        ogs_assert(r != OGS_ERROR);
+        return NULL;
+    }
+
+    return ran_ue;
+}
+
 static bool gnb_id_length_from_global_gnb_id(
         NGAP_GlobalGNB_ID_t *globalGNB_ID, uint8_t *gnb_id_length)
 {
@@ -699,7 +793,6 @@ void ngap_handle_uplink_nas_transport(
 
     amf_ue_t *amf_ue = NULL;
     ran_ue_t *ran_ue = NULL;
-    uint64_t amf_ue_ngap_id;
 
     NGAP_InitiatingMessage_t *initiatingMessage = NULL;
     NGAP_UplinkNASTransport_t *UplinkNASTransport = NULL;
@@ -748,55 +841,38 @@ void ngap_handle_uplink_nas_transport(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
-    if (!AMF_UE_NGAP_ID) {
-        ogs_error("No AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
-        ogs_error("Invalid AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
-        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
     if (!ran_ue) {
-        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
         return;
     }
 
     amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
     if (!amf_ue) {
-        ogs_error("Cannot find AMF-UE Context [%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, &ran_ue->ran_ue_ngap_id, &ran_ue->amf_ue_ngap_id,
+        /*
+         * Stale NG-RAN context. Dominant trigger: HOLDING_NG_CONTEXT
+         * clears ran_ue->amf_ue_id when a newer NG-connection arrives
+         * for the same NAS UE; the held ran_ue stays in the pool until
+         * CLEAR_NG_CONTEXT fires after Security Mode Complete on the
+         * new connection (per TS 23.502 §4.2.6: "after successfully
+         * authenticating the UE, the AMF releases the old NAS
+         * signalling connection"). If the gNB sends a stale message
+         * on the held IDs during that window, sending
+         * UEContextReleaseCommand here - instead of Error Indication
+         * with the misleading cause unknown-local-UE-NGAP-ID, since
+         * the AMF actually knows the ID and just cleared the amf_ue
+         * back-link - lets the gNB promptly release its end of the
+         * stale RAN context. Mirrors the existing handling in
+         * ngap_handle_ue_context_release_request().
+         */
+        ogs_error("UplinkNASTransport on stale NG context "
+                "[AMF_UE_NGAP_ID:%lld] - sending UEContextReleaseCommand",
+                (long long)ran_ue->amf_ue_ngap_id);
+        r = ngap_send_ran_ue_context_release_command(ran_ue,
                 NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+                NGAP_CauseRadioNetwork_unspecified,
+                NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -879,7 +955,6 @@ void ngap_handle_ue_radio_capability_info_indication(
 
     ran_ue_t *ran_ue = NULL;
     amf_ue_t *amf_ue = NULL;
-    uint64_t amf_ue_ngap_id;
 
     NGAP_InitiatingMessage_t *initiatingMessage = NULL;
     NGAP_UERadioCapabilityInfoIndication_t
@@ -923,44 +998,10 @@ void ngap_handle_ue_radio_capability_info_indication(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
-    if (!AMF_UE_NGAP_ID) {
-        ogs_error("No AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
-        ogs_error("Invalid AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
-        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
     if (!ran_ue) {
-        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
         return;
     }
 
@@ -992,7 +1033,6 @@ void ngap_handle_initial_context_setup_response(
     amf_ue_t *amf_ue = NULL;
     ran_ue_t *ran_ue = NULL;
     amf_sess_t *sess = NULL;
-    uint64_t amf_ue_ngap_id;
     amf_nsmf_pdusession_sm_context_param_t param;
 
     NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
@@ -1038,44 +1078,10 @@ void ngap_handle_initial_context_setup_response(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
-    if (!AMF_UE_NGAP_ID) {
-        ogs_error("No AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
-        ogs_error("Invalid AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
-        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
     if (!ran_ue) {
-        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
         return;
     }
 
@@ -1087,12 +1093,18 @@ void ngap_handle_initial_context_setup_response(
 
     amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
     if (!amf_ue) {
-        ogs_error("Cannot find AMF-UE Context [%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, &ran_ue->ran_ue_ngap_id, &ran_ue->amf_ue_ngap_id,
+        /*
+         * Stale NG-RAN context - see ngap_handle_uplink_nas_transport()
+         * for the rationale. Send UEContextReleaseCommand so the gNB
+         * cleans up its end of the stale RAN context.
+         */
+        ogs_error("InitialContextSetupResponse on stale NG context "
+                "[AMF_UE_NGAP_ID:%lld] - sending UEContextReleaseCommand",
+                (long long)ran_ue->amf_ue_ngap_id);
+        r = ngap_send_ran_ue_context_release_command(ran_ue,
                 NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+                NGAP_CauseRadioNetwork_unspecified,
+                NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -1285,7 +1297,6 @@ void ngap_handle_initial_context_setup_failure(
 
     ran_ue_t *ran_ue = NULL;
     amf_ue_t *amf_ue = NULL;
-    uint64_t amf_ue_ngap_id;
 
     NGAP_UnsuccessfulOutcome_t *unsuccessfulOutcome = NULL;
     NGAP_InitialContextSetupFailure_t *InitialContextSetupFailure = NULL;
@@ -1327,44 +1338,10 @@ void ngap_handle_initial_context_setup_failure(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
-    if (!AMF_UE_NGAP_ID) {
-        ogs_error("No AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
-        ogs_error("Invalid AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
-        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
     if (!ran_ue) {
-        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
         return;
     }
 
@@ -2012,7 +1989,6 @@ void ngap_handle_pdu_session_resource_setup_response(
 
     amf_ue_t *amf_ue = NULL;
     ran_ue_t *ran_ue = NULL;
-    uint64_t amf_ue_ngap_id;
     amf_nsmf_pdusession_sm_context_param_t param;
 
     NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
@@ -2067,44 +2043,10 @@ void ngap_handle_pdu_session_resource_setup_response(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
-    if (!AMF_UE_NGAP_ID) {
-        ogs_error("No AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
-        ogs_error("Invalid AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
-        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
     if (!ran_ue) {
-        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
         return;
     }
 
@@ -2114,12 +2056,18 @@ void ngap_handle_pdu_session_resource_setup_response(
 
     amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
     if (!amf_ue) {
-        ogs_error("Cannot find AMF-UE Context [%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, &ran_ue->ran_ue_ngap_id, &ran_ue->amf_ue_ngap_id,
+        /*
+         * Stale NG-RAN context - see ngap_handle_uplink_nas_transport()
+         * for the rationale. Send UEContextReleaseCommand so the gNB
+         * cleans up its end of the stale RAN context.
+         */
+        ogs_error("PDUSessionResourceSetupResponse on stale NG context "
+                "[AMF_UE_NGAP_ID:%lld] - sending UEContextReleaseCommand",
+                (long long)ran_ue->amf_ue_ngap_id);
+        r = ngap_send_ran_ue_context_release_command(ran_ue,
                 NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+                NGAP_CauseRadioNetwork_unspecified,
+                NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2352,7 +2300,6 @@ void ngap_handle_pdu_session_resource_modify_response(
 
     amf_ue_t *amf_ue = NULL;
     ran_ue_t *ran_ue = NULL;
-    uint64_t amf_ue_ngap_id;
     amf_nsmf_pdusession_sm_context_param_t param;
 
     NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
@@ -2399,44 +2346,10 @@ void ngap_handle_pdu_session_resource_modify_response(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
-    if (!AMF_UE_NGAP_ID) {
-        ogs_error("No AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
-        ogs_error("Invalid AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
-        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
     if (!ran_ue) {
-        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
         return;
     }
 
@@ -2446,12 +2359,18 @@ void ngap_handle_pdu_session_resource_modify_response(
 
     amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
     if (!amf_ue) {
-        ogs_error("Cannot find AMF-UE Context [%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, &ran_ue->ran_ue_ngap_id, &ran_ue->amf_ue_ngap_id,
+        /*
+         * Stale NG-RAN context - see ngap_handle_uplink_nas_transport()
+         * for the rationale. Send UEContextReleaseCommand so the gNB
+         * cleans up its end of the stale RAN context.
+         */
+        ogs_error("PDUSessionResourceModifyResponse on stale NG context "
+                "[AMF_UE_NGAP_ID:%lld] - sending UEContextReleaseCommand",
+                (long long)ran_ue->amf_ue_ngap_id);
+        r = ngap_send_ran_ue_context_release_command(ran_ue,
                 NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+                NGAP_CauseRadioNetwork_unspecified,
+                NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2548,7 +2467,6 @@ void ngap_handle_pdu_session_resource_release_response(
 
     amf_ue_t *amf_ue = NULL;
     ran_ue_t *ran_ue = NULL;
-    uint64_t amf_ue_ngap_id;
     amf_nsmf_pdusession_sm_context_param_t param;
 
     NGAP_SuccessfulOutcome_t *successfulOutcome = NULL;
@@ -2596,44 +2514,10 @@ void ngap_handle_pdu_session_resource_release_response(
     ogs_debug("    IP[%s] RAN_ID[%d]",
             OGS_ADDR(gnb->sctp.addr, buf), gnb->gnb_id);
 
-    if (!AMF_UE_NGAP_ID) {
-        ogs_error("No AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (asn_INTEGER2uint64(AMF_UE_NGAP_ID, &amf_ue_ngap_id) != 0) {
-        ogs_error("Invalid AMF_UE_NGAP_ID");
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    if (amf_ue_ngap_id > MAX_AMF_UE_NGAP_ID) {
-        ogs_error("Overflow AMF_UE_NGAP_ID(2^40-1, 0xffffffffff) [0x%llx]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(gnb, (uint64_t *)RAN_UE_NGAP_ID, NULL,
-                NGAP_Cause_PR_protocol, NGAP_CauseProtocol_semantic_error);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
-        return;
-    }
-
-    ran_ue = ran_ue_find_by_amf_ue_ngap_id(amf_ue_ngap_id);
+    ran_ue = ngap_find_ran_ue_by_message_ue_ids(
+            gnb, AMF_UE_NGAP_ID, RAN_UE_NGAP_ID);
     if (!ran_ue) {
-        ogs_error("No RAN UE Context : AMF_UE_NGAP_ID[%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, (uint64_t *)RAN_UE_NGAP_ID, &amf_ue_ngap_id,
-                NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
-        ogs_expect(r == OGS_OK);
-        ogs_assert(r != OGS_ERROR);
+        ogs_error("%s: Failed to find RAN UE by NGAP UE IDs", __func__);
         return;
     }
 
@@ -2643,12 +2527,18 @@ void ngap_handle_pdu_session_resource_release_response(
 
     amf_ue = amf_ue_find_by_id(ran_ue->amf_ue_id);
     if (!amf_ue) {
-        ogs_error("Cannot find AMF-UE Context [%lld]",
-                (long long)amf_ue_ngap_id);
-        r = ngap_send_error_indication(
-                gnb, &ran_ue->ran_ue_ngap_id, &ran_ue->amf_ue_ngap_id,
+        /*
+         * Stale NG-RAN context - see ngap_handle_uplink_nas_transport()
+         * for the rationale. Send UEContextReleaseCommand so the gNB
+         * cleans up its end of the stale RAN context.
+         */
+        ogs_error("PDUSessionResourceReleaseResponse on stale NG context "
+                "[AMF_UE_NGAP_ID:%lld] - sending UEContextReleaseCommand",
+                (long long)ran_ue->amf_ue_ngap_id);
+        r = ngap_send_ran_ue_context_release_command(ran_ue,
                 NGAP_Cause_PR_radioNetwork,
-                NGAP_CauseRadioNetwork_unknown_local_UE_NGAP_ID);
+                NGAP_CauseRadioNetwork_unspecified,
+                NGAP_UE_CTX_REL_NG_CONTEXT_REMOVE, 0);
         ogs_expect(r == OGS_OK);
         ogs_assert(r != OGS_ERROR);
         return;
@@ -2901,7 +2791,8 @@ void ngap_handle_path_switch_request(
     NGAP_EUTRAintegrityProtectionAlgorithms_t
         *eUTRAintegrityProtectionAlgorithms = NULL;
     uint16_t nr_ea = 0, nr_ia = 0, eutra_ea = 0, eutra_ia = 0;
-    uint8_t nr_ea0 = 0, nr_ia0 = 0, eutra_ea0 = 0, eutra_ia0 = 0;
+    uint8_t received_nr_ea = 0, received_nr_ia = 0;
+    uint8_t received_eutra_ea = 0, received_eutra_ia = 0;
 
     NGAP_PDUSessionResourceToBeSwitchedDLItem_t *PDUSessionItem = NULL;
     OCTET_STRING_t *transfer = NULL;
@@ -3011,6 +2902,8 @@ void ngap_handle_path_switch_request(
         ogs_assert(r != OGS_ERROR);
         return;
     }
+
+    amf_ue->send_ue_security_capability_in_path_switch_ack = false;
 
     ogs_info("    [OLD] RAN_UE_NGAP_ID[%lld] AMF_UE_NGAP_ID[%lld] ",
         (long long)ran_ue->ran_ue_ngap_id, (long long)ran_ue->amf_ue_ngap_id);
@@ -3165,30 +3058,59 @@ void ngap_handle_path_switch_request(
         ogs_assert(r != OGS_ERROR);
         return;
     }
+    /*
+     * TS 33.501 6.7.3.1:
+     *
+     * The AMF shall verify that the UE's 5G security capabilities
+     * received from the target gNB/ng-eNB are the same as the UE's
+     * 5G security capabilities locally stored in the AMF.
+     *
+     * If there is a mismatch, the AMF shall send its locally stored
+     * UE security capabilities to the target gNB/ng-eNB in the
+     * Path Switch Request Acknowledge message.
+     *
+     * Therefore, do not overwrite amf_ue->ue_security_capability
+     * with the value received in PathSwitchRequest.
+     */
     memcpy(&nr_ea, nRencryptionAlgorithms->buf, sizeof(nr_ea));
     nr_ea = be16toh(nr_ea);
-    nr_ea0 = amf_ue->ue_security_capability.nr_ea0;
-    amf_ue->ue_security_capability.nr_ea = nr_ea >> 9;
-    amf_ue->ue_security_capability.nr_ea0 = nr_ea0;
+    received_nr_ea = nr_ea >> 9;
 
     memcpy(&nr_ia, nRintegrityProtectionAlgorithms->buf, sizeof(nr_ia));
     nr_ia = be16toh(nr_ia);
-    nr_ia0 = amf_ue->ue_security_capability.nr_ia0;
-    amf_ue->ue_security_capability.nr_ia = nr_ia >> 9;
-    amf_ue->ue_security_capability.nr_ia0 = nr_ia0;
+    received_nr_ia = nr_ia >> 9;
 
     memcpy(&eutra_ea, eUTRAencryptionAlgorithms->buf, sizeof(eutra_ea));
     eutra_ea = be16toh(eutra_ea);
-    eutra_ea0 = amf_ue->ue_security_capability.eutra_ea0;
-    amf_ue->ue_security_capability.eutra_ea = eutra_ea >> 9;
-    amf_ue->ue_security_capability.eutra_ea0 = eutra_ea0;
+    received_eutra_ea = eutra_ea >> 9;
 
     memcpy(&eutra_ia,
             eUTRAintegrityProtectionAlgorithms->buf, sizeof(eutra_ia));
     eutra_ia = be16toh(eutra_ia);
-    eutra_ia0 = amf_ue->ue_security_capability.eutra_ia0;
-    amf_ue->ue_security_capability.eutra_ia = eutra_ia >> 9;
-    amf_ue->ue_security_capability.eutra_ia0 = eutra_ia0;
+    received_eutra_ia = eutra_ia >> 9;
+
+    if (received_nr_ea != (amf_ue->ue_security_capability.nr_ea & 0x7f) ||
+        received_nr_ia != (amf_ue->ue_security_capability.nr_ia & 0x7f) ||
+        received_eutra_ea !=
+            (amf_ue->ue_security_capability.eutra_ea & 0x7f) ||
+        received_eutra_ia !=
+            (amf_ue->ue_security_capability.eutra_ia & 0x7f)) {
+        amf_ue->send_ue_security_capability_in_path_switch_ack = true;
+
+        ogs_warn("[%s] UE Security Capability mismatch in "
+                "PathSwitchRequest",
+                amf_ue->supi ? amf_ue->supi : "Unknown");
+        ogs_warn("    Stored  NR_EA[0x%x] NR_IA[0x%x] "
+                "EUTRA_EA[0x%x] EUTRA_IA[0x%x]",
+                amf_ue->ue_security_capability.nr_ea,
+                amf_ue->ue_security_capability.nr_ia,
+                amf_ue->ue_security_capability.eutra_ea,
+                amf_ue->ue_security_capability.eutra_ia);
+        ogs_warn("    Received NR_EA[0x%x] NR_IA[0x%x] "
+                "EUTRA_EA[0x%x] EUTRA_IA[0x%x]",
+                received_nr_ea, received_nr_ia,
+                received_eutra_ea, received_eutra_ia);
+    }
 
     /* Update Security Context (NextHop) */
     amf_ue->nhcc++;
