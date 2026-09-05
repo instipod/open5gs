@@ -5,6 +5,7 @@ subprojects/freeDiameter
 subprojects/libtins
 subprojects/prometheus-client-c
 subprojects/usrsctp
+subprojects/.wraplock
 
 webui/.next
 

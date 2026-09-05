@@ -1917,7 +1917,33 @@ void s1ap_handle_e_rab_setup_response(
                         OGS_GTP_DELETE_NO_ACTION));
                 ogs_warn("Delete Session Request");
             } else {
-                ogs_error("Not implemented : remove dedicated bearer");
+                /*
+                 * Radio failure cleanup for a dedicated bearer.
+                 *
+                 * The bearer context was created by
+                 * mme_s11_handle_create_bearer_request(), which allocated
+                 * an EPS Bearer Identity from the UE bitmap(EBI 5-15).
+                 *
+                 * If we leave it behind, both the bearer context and its
+                 * EBI are leaked -- the SGW never learns that the bearer
+                 * was not established, and every subsequent dedicated
+                 * bearer activation that fails on the radio side consumes
+                 * one more EBI. Once the bitmap is full, mme_bearer_add()
+                 * returns NULL in mme_s11_handle_create_bearer_request().
+                 *
+                 * So reject the pending Create Bearer Request and remove
+                 * the bearer context.
+                 */
+                ogs_warn("Remove dedicated bearer [EBI:%d]", bearer->ebi);
+
+                if (bearer->create.xact_id >= OGS_MIN_POOL_ID &&
+                    bearer->create.xact_id <= OGS_MAX_POOL_ID) {
+                    r = mme_gtp_send_create_bearer_response(
+                            bearer, OGS_GTP2_CAUSE_NO_RESOURCES_AVAILABLE);
+                    ogs_expect(r == OGS_OK);
+                }
+
+                mme_bearer_remove(bearer);
             }
         }
     }
@@ -4746,6 +4772,25 @@ void s1ap_handle_s1_reset(
                     "(MME_UE_S1AP_ID[%d] ENB_UE_S1AP_ID[%d])",
                     item->mME_UE_S1AP_ID ? (int)*item->mME_UE_S1AP_ID : -1,
                     item->eNB_UE_S1AP_ID ? (int)*item->eNB_UE_S1AP_ID : -1);
+                continue;
+            }
+
+            if (enb_ue->enb_id != enb->id) {
+                ogs_error("MME_UE_S1AP_ID[%lld] does not belong to this eNB "
+                        "[UE:eNB-ID:%llu, Message:eNB-ID:%llu]",
+                        (long long)enb_ue->mme_ue_s1ap_id,
+                        (unsigned long long)enb_ue->enb_id,
+                        (unsigned long long)enb->id);
+                continue;
+            }
+
+            if (item->mME_UE_S1AP_ID && item->eNB_UE_S1AP_ID &&
+                    enb_ue->enb_ue_s1ap_id != *item->eNB_UE_S1AP_ID) {
+                ogs_error("Invalid ENB_UE_S1AP_ID[%lld] for "
+                        "MME_UE_S1AP_ID[%lld] [expected:%u]",
+                        (long long)*item->eNB_UE_S1AP_ID,
+                        (long long)enb_ue->mme_ue_s1ap_id,
+                        enb_ue->enb_ue_s1ap_id);
                 continue;
             }
 

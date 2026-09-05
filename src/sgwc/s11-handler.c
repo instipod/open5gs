@@ -1275,10 +1275,11 @@ void sgwc_s11_handle_delete_bearer_response(
      ********************/
     ogs_assert(s11_xact);
     s5c_xact = ogs_gtp_xact_find_by_id(s11_xact->assoc_xact_id);
-    ogs_assert(s5c_xact);
+    /* s5c_xact may be NULL; handled after the transaction is committed. */
 
     if (s11_xact->xid & OGS_GTP_CMD_XACT_ID) {
         /* MME received Bearer Resource Modification Request */
+        ogs_assert(s5c_xact);
         ogs_assert(s5c_xact->data);
         bearer_id = OGS_POINTER_TO_UINT(s5c_xact->data);
         ogs_assert(bearer_id >= OGS_MIN_POOL_ID &&
@@ -1312,6 +1313,50 @@ void sgwc_s11_handle_delete_bearer_response(
 
     rv = ogs_gtp_xact_commit(s11_xact);
     ogs_expect(rv == OGS_OK);
+
+    if (!s5c_xact) {
+        /*
+         * The S5-C transaction of a relayed (PGW-initiated) Delete
+         * Bearer Request has already expired, e.g. the Delete Bearer
+         * Response was delayed by paging an ECM-IDLE UE. There is
+         * nothing to relay back to the PGW anymore, but the local PFCP
+         * session/bearer removal still has to be completed. (This
+         * previously hit ogs_assert(s5c_xact) and crashed the SGW-C.)
+         */
+        ogs_warn("S5-C transaction has already been removed");
+        if (!bearer || !sess) {
+            ogs_error("No Bearer/Session context after S5-C transaction "
+                    "expiry; nothing to clean up");
+            return;
+        }
+
+        /*
+         * The Cause is logged for observability only, mirroring the
+         * normal relay path below: the local PFCP removal is performed
+         * regardless of the Cause. This is PGW-initiated bearer
+         * deactivation - the PGW deletes its side of the bearer in any
+         * case, so keeping the local state on a failure Cause would
+         * leave the SGW forwarding into a dead S5-U tunnel.
+         */
+        if (rsp->cause.presence) {
+            ogs_gtp2_cause_t *cause = rsp->cause.data;
+            ogs_assert(cause);
+            if (cause->value != OGS_GTP2_CAUSE_REQUEST_ACCEPTED)
+                ogs_error("GTP Cause [Value:%d]", cause->value);
+        } else
+            ogs_error("No Cause");
+
+        if (rsp->linked_eps_bearer_id.presence)
+            ogs_assert(OGS_OK ==
+                sgwc_pfcp_send_session_deletion_request(
+                    sess, OGS_INVALID_POOL_ID, NULL));
+        else
+            ogs_assert(OGS_OK ==
+                sgwc_pfcp_send_bearer_modification_request(
+                    bearer, OGS_INVALID_POOL_ID, NULL,
+                    OGS_PFCP_MODIFY_REMOVE));
+        return;
+    }
 
     /************************
      * Check SGWC-UE Context
@@ -1469,6 +1514,17 @@ void sgwc_s11_handle_release_access_bearers_request(
 
     ogs_list_for_each(&sgwc_ue->sess_list, sess) {
 
+        /*
+         * A PDN connection is never expected to lose its last bearer while
+         * staying in sgwc_ue->sess_list. Keep the assert, but identify the
+         * PDN connection first - the assert alone does not tell which one
+         * it was.
+         */
+        if (ogs_list_count(&sess->bearer_list) == 0)
+            ogs_fatal("No Bearer [imsi:%s sess_id:%d apn:%s "
+                    "sgw_s5c_teid:0x%x pgw_s5c_teid:0x%x]",
+                    sgwc_ue->imsi_bcd, sess->id, sess->session.name,
+                    sess->sgw_s5c_teid, sess->pgw_s5c_teid);
         ogs_assert(ogs_list_count(&sess->bearer_list));
         ogs_info("    sess_id=%d xact=%p", sess->id, s11_xact);
         ogs_assert(OGS_OK ==
@@ -1627,12 +1683,29 @@ void sgwc_s11_handle_create_indirect_data_forwarding_tunnel_request(
             req_teid = req->bearer_contexts[i].s1_u_enodeb_f_teid.data;
             ogs_assert(req_teid);
 
-            tunnel = sgwc_tunnel_add(bearer,
+            /*
+             * If the indirect data forwarding tunnel of the previous
+             * handover has not been deleted -- the MME does not always
+             * send Delete Indirect Data Forwarding Tunnel Request --
+             * re-use it.
+             *
+             * OGS_MAX_NUM_OF_PDR is dimensioned for a single forwarding
+             * pair per bearer, so allocating a new PDR/FAR on every
+             * handover exhausts the PDR pool of the session.
+             */
+            tunnel = sgwc_tunnel_find_by_interface_type(bearer,
                     OGS_GTP2_F_TEID_SGW_GTP_U_FOR_DL_DATA_FORWARDING);
-            if (!tunnel) {
-                ogs_error("sgwc_tunnel_add() failed");
-                cause_value = OGS_GTP2_CAUSE_SYSTEM_FAILURE;
-                goto cleanup;
+            if (tunnel) {
+                ogs_error("[%s] Re-use indirect DL tunnel [EBI:%d]",
+                        sgwc_ue->imsi_bcd, bearer->ebi);
+            } else {
+                tunnel = sgwc_tunnel_add(bearer,
+                        OGS_GTP2_F_TEID_SGW_GTP_U_FOR_DL_DATA_FORWARDING);
+                if (!tunnel) {
+                    ogs_error("sgwc_tunnel_add() failed");
+                    cause_value = OGS_GTP2_CAUSE_SYSTEM_FAILURE;
+                    goto cleanup;
+                }
             }
 
             tunnel->remote_teid = be32toh(req_teid->teid);
@@ -1675,12 +1748,20 @@ void sgwc_s11_handle_create_indirect_data_forwarding_tunnel_request(
             req_teid = req->bearer_contexts[i].s12_rnc_f_teid.data;
             ogs_assert(req_teid);
 
-            tunnel = sgwc_tunnel_add(bearer,
+            /* See the comment on the DL data forwarding tunnel above */
+            tunnel = sgwc_tunnel_find_by_interface_type(bearer,
                     OGS_GTP2_F_TEID_SGW_GTP_U_FOR_UL_DATA_FORWARDING);
-            if (!tunnel) {
-                ogs_error("sgwc_tunnel_add() failed");
-                cause_value = OGS_GTP2_CAUSE_SYSTEM_FAILURE;
-                goto cleanup;
+            if (tunnel) {
+                ogs_error("[%s] Re-use indirect UL tunnel [EBI:%d]",
+                        sgwc_ue->imsi_bcd, bearer->ebi);
+            } else {
+                tunnel = sgwc_tunnel_add(bearer,
+                        OGS_GTP2_F_TEID_SGW_GTP_U_FOR_UL_DATA_FORWARDING);
+                if (!tunnel) {
+                    ogs_error("sgwc_tunnel_add() failed");
+                    cause_value = OGS_GTP2_CAUSE_SYSTEM_FAILURE;
+                    goto cleanup;
+                }
             }
 
             tunnel->remote_teid = be32toh(req_teid->teid);
@@ -1723,6 +1804,11 @@ void sgwc_s11_handle_create_indirect_data_forwarding_tunnel_request(
     ogs_list_for_each(&sgwc_ue->sess_list, sess) {
         bool has_indirect = false;
 
+        if (ogs_list_count(&sess->bearer_list) == 0)
+            ogs_fatal("No Bearer [imsi:%s sess_id:%d apn:%s "
+                    "sgw_s5c_teid:0x%x pgw_s5c_teid:0x%x]",
+                    sgwc_ue->imsi_bcd, sess->id, sess->session.name,
+                    sess->sgw_s5c_teid, sess->pgw_s5c_teid);
         ogs_assert(ogs_list_count(&sess->bearer_list));
         ogs_list_for_each(&sess->bearer_list, bearer) {
             ogs_list_for_each(&bearer->tunnel_list, tunnel) {

@@ -95,6 +95,22 @@ typedef struct mme_context_s {
     ogs_sockaddr_t  *pgw_addr;      /* First IPv4 Address Selected */
     ogs_sockaddr_t  *pgw_addr6;     /* First IPv6 Address Selected */
 
+    /* DNS-based SGW/PGW selection (3GPP TS 29.303) */
+#define MME_DNS_MAX_SERVER 4
+    struct {
+        bool enabled;               /* `mme.dns` section present */
+        int num_of_server;
+        struct {
+            const char *address;
+            uint16_t port;          /* default 53 */
+        } server[MME_DNS_MAX_SERVER];
+        int timeout;                /* seconds per query round, default 2 */
+        int retries;                /* default 2 */
+        int protocol;               /* mme_dns_proto_e: auto | s5 | s8 */
+        int cache_ttl;              /* NAPTR/SRV cache TTL (s), default 60 */
+        int guard_timeout;          /* overall guard (ms), default 3000 */
+    } dns;
+
     ogs_list_t      enb_list;       /* ENB S1AP Client List */
 
     ogs_list_t      vlr_list;       /* VLR SGsAP Client List */
@@ -196,6 +212,10 @@ typedef struct mme_sgw_s {
     int             num_of_tac;
     uint32_t        e_cell_id[OGS_MAX_NUM_OF_CELL_ID];
     int             num_of_e_cell_id;
+
+    /* Node discovered via DNS (TS 29.303), not from the configuration
+     * file. Such nodes are kept for the lifetime of the process. */
+    bool            dns_origin;
 
     ogs_list_t      sgw_ue_list;
 } mme_sgw_t;
@@ -665,6 +685,9 @@ struct mme_ue_s {
 #define CLEAR_EPS_BEARER_ID(__mME) \
     do { \
         ogs_assert((__mME)); \
+        ogs_info("[EBI-TRACK] CLEAR_EPS_BEARER_ID ue_id[%d] IMSI[%s] " \
+                "bitmap[0x%04x]", \
+                (__mME)->id, (__mME)->imsi_bcd, (__mME)->ebi_bitmap); \
         (__mME)->ebi_bitmap = 0; \
     } while(0)
 
@@ -758,6 +781,7 @@ struct mme_ue_s {
         ogs_debug("[%s] Clear Paging Info", (__mME)->imsi_bcd); \
         (__mME)->paging.type = 0; \
         (__mME)->paging.failed = false; \
+        (__mME)->paging.esm_cause = OGS_NAS_ESM_CAUSE_REGULAR_DEACTIVATION; \
     } while(0)
 
 #define MME_STORE_PAGING_INFO(__mME, __tYPE, __dATA) \
@@ -781,6 +805,8 @@ struct mme_ue_s {
         int type;
         void *data;
         bool failed;
+        uint8_t esm_cause; /* NAS ESM cause carried across paging to the
+                            * deferred (post-paging) deactivation/detach */
     } paging;
 
     /* SGW UE context */
@@ -884,6 +910,12 @@ struct mme_ue_s {
 
     mme_csmap_t     *csmap;
     mme_hssmap_t    *hssmap;
+
+    /* HSS identity dynamically learned from the Origin-Host/Origin-Realm
+     * of successful S6a answers (AIA/ULA), used as Destination-Host/Realm
+     * in subsequent requests as per 3GPP TS 29.272 clause 7.1.6. */
+    char            *hss_host;
+    char            *hss_realm;
 };
 
 #define MME_UE_REMOVE_WITH_PAGING_FAIL(__mME) \
@@ -968,6 +1000,9 @@ typedef struct mme_sess_s {
 
     /* Save Extended Protocol Configuration Options from PGW */
     ogs_tlv_octet_t pgw_epco;
+
+    /* DNS-based gateway selection state (mme-dns.c pool id) */
+    ogs_pool_id_t   dns_id;
 } mme_sess_t;
 
 #define MME_HAVE_ENB_S1U_PATH(__bEARER) \
@@ -1014,6 +1049,10 @@ typedef struct mme_bearer_s {
     ogs_fsm_t       sm;             /* State Machine */
 
     uint8_t         ebi;            /* EPS Bearer ID */
+
+    /* [EBI-TRACK] when this bearer context was created, so leaked
+     * bearers can be identified by their age at dump time. */
+    ogs_time_t      trace_created;
 
     uint32_t        enb_s1u_teid;
     ogs_ip_t        enb_s1u_ip;
@@ -1131,6 +1170,11 @@ void mme_hssmap_remove(mme_hssmap_t *hssmap);
 void mme_hssmap_remove_all(void);
 
 mme_hssmap_t *mme_hssmap_find_by_imsi_bcd(const char *imsi_bcd);
+
+void mme_ue_set_hss_identity(mme_ue_t *mme_ue,
+        const uint8_t *host, size_t host_len,
+        const uint8_t *realm, size_t realm_len);
+void mme_ue_clear_hss_identity(mme_ue_t *mme_ue);
 
 mme_enb_t *mme_enb_add(ogs_sock_t *sock, ogs_sockaddr_t *addr);
 int mme_enb_remove(mme_enb_t *enb);
@@ -1293,6 +1337,10 @@ mme_m_tmsi_t *mme_m_tmsi_alloc(void);
 int mme_m_tmsi_free(mme_m_tmsi_t *tmsi);
 
 uint8_t mme_ebi_alloc(mme_ue_t *mme_ue);
+
+/* [EBI-TRACK] instrumentation helpers */
+const char *mme_ebi_track_esm_state_name(mme_bearer_t *bearer);
+void mme_ebi_track_dump(mme_ue_t *mme_ue, const char *reason);
 int mme_ebi_free(mme_ue_t *mme_ue, int ebi);
 int mme_ebi_reserve(mme_ue_t *mme_ue, int ebi);
 
