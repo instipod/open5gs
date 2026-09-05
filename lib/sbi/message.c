@@ -209,6 +209,8 @@ void ogs_sbi_message_free(ogs_sbi_message_t *message)
         OpenAPI_app_session_context_free(message->AppSessionContext);
     if (message->AppSessionContextUpdateDataPatch)
         OpenAPI_app_session_context_update_data_patch_free(message->AppSessionContextUpdateDataPatch);
+    if (message->TerminationInfo)
+        OpenAPI_termination_info_free(message->TerminationInfo);
     if (message->SmPolicyNotification)
         OpenAPI_sm_policy_notification_free(message->SmPolicyNotification);
     if (message->TerminationNotification)
@@ -1704,6 +1706,10 @@ static char *build_json(ogs_sbi_message_t *message)
         item = OpenAPI_app_session_context_update_data_patch_convertToJSON(
                 message->AppSessionContextUpdateDataPatch);
         ogs_assert(item);
+    } else if (message->TerminationInfo) {
+        item = OpenAPI_termination_info_convertToJSON(
+                message->TerminationInfo);
+        ogs_assert(item);
     } else if (message->SmPolicyNotification) {
         item = OpenAPI_sm_policy_notification_convertToJSON(
                 message->SmPolicyNotification);
@@ -2890,6 +2896,14 @@ static int parse_json(ogs_sbi_message_t *message,
                         CASE(OGS_SBI_RESOURCE_NAME_DELETE)
                             /* Nothing */
                             break;
+                        CASE(OGS_SBI_RESOURCE_NAME_TERMINATE)
+                            message->TerminationInfo =
+                                OpenAPI_termination_info_parseFromJSON(item);
+                            if (!message->TerminationInfo) {
+                                rv = OGS_ERROR;
+                                ogs_error("JSON parse error");
+                            }
+                            break;
                         DEFAULT
                             rv = OGS_ERROR;
                             ogs_error("JSON parse error");
@@ -3512,6 +3526,9 @@ static bool build_multipart(
     char *content_type = NULL;
     char *json = NULL;
 
+    size_t remaining;
+    size_t closing_boundary_len;
+
     ogs_assert(message);
     ogs_assert(http);
 
@@ -3519,6 +3536,9 @@ static bool build_multipart(
     strcpy(boundary, "=-");
     ogs_assert(ogs_base64_encode_from_buffer(
             boundary + 2, sizeof(boundary) - 2, digest, sizeof(digest)) > 0);
+
+    closing_boundary_len =
+        sizeof("\r\n--") - 1 + strlen(boundary) + sizeof("--\r\n") - 1;
 
     p = http->content = ogs_calloc(1, OGS_MAX_SDU_LEN);
     if (!p) {
@@ -3553,11 +3573,35 @@ static bool build_multipart(
                 OGS_SBI_CONTENT_ID, message->part[i].content_id);
         p = ogs_slprintf(p, last, "%s: %s\r\n\r\n",
                 OGS_SBI_CONTENT_TYPE, message->part[i].content_type);
+
+        /*
+         * The part body is copied with memcpy() below, which is not bounded
+         * by `last` (unlike ogs_slprintf() above). Reserve space for the
+         * closing boundary before copying the part body.
+         */
+        remaining = (p < last) ? (size_t)(last - p) : 0;
+        if (remaining < closing_boundary_len + 1 ||
+                message->part[i].pkbuf->len >
+                remaining - closing_boundary_len - 1) {
+            ogs_error("Multipart part too large to build "
+                    "[part:%d content-id:%s len:%u remaining:%zu]",
+                    i, message->part[i].content_id,
+                    message->part[i].pkbuf->len, remaining);
+            return false;
+        }
+
         memcpy(p, message->part[i].pkbuf->data, message->part[i].pkbuf->len);
         p += message->part[i].pkbuf->len;
     }
 
     /* Last boundary */
+    remaining = (p < last) ? (size_t)(last - p) : 0;
+    if (remaining < closing_boundary_len + 1) {
+        ogs_error("Multipart content too large to build "
+                "[closing-boundary:%zu remaining:%zu]",
+                closing_boundary_len, remaining);
+        return false;
+    }
     p = ogs_slprintf(p, last, "\r\n--%s--\r\n", boundary);
 
     http->content_length = p - http->content;
