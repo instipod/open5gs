@@ -117,25 +117,6 @@ upf_context_t *upf_self(void)
     return &self;
 }
 
-static void upf_sess_clear_ue_ip(upf_sess_t *sess)
-{
-    ogs_assert(sess);
-
-    if (sess->ipv4) {
-        ogs_hash_unset_if_owner(self.ipv4_hash,
-                sess->ipv4->addr, OGS_IPV4_LEN, sess);
-        ogs_pfcp_ue_ip_free(sess->ipv4);
-        sess->ipv4 = NULL;
-    }
-    if (sess->ipv6) {
-        ogs_hash_unset_if_owner(self.ipv6_hash,
-                sess->ipv6->addr,
-                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, sess);
-        ogs_pfcp_ue_ip_free(sess->ipv6);
-        sess->ipv6 = NULL;
-    }
-}
-
 /*
  * Parse a MAC prefix string of the form "XX:XX:XX" (hex, colon-separated)
  * into three bytes.  Returns true on success.
