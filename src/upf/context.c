@@ -285,6 +285,25 @@ void upf_lookup_mac_prefix_by_imei(const uint8_t *imeisv, uint8_t imeisv_len,
     memcpy(mac_prefix, default_prefix, 3);
 }
 
+static void upf_sess_clear_ue_ip(upf_sess_t *sess)
+{
+    ogs_assert(sess);
+
+    if (sess->ipv4) {
+        ogs_hash_unset_if_owner(self.ipv4_hash,
+                sess->ipv4->addr, OGS_IPV4_LEN, sess);
+        ogs_pfcp_ue_ip_free(sess->ipv4);
+        sess->ipv4 = NULL;
+    }
+    if (sess->ipv6) {
+        ogs_hash_unset_if_owner(self.ipv6_hash,
+                sess->ipv6->addr,
+                OGS_IPV6_DEFAULT_PREFIX_LEN >> 3, sess);
+        ogs_pfcp_ue_ip_free(sess->ipv6);
+        sess->ipv6 = NULL;
+    }
+}
+
 static int upf_context_prepare(void)
 {
     self.ue_to_ue_hairpin = true;
