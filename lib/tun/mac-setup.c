@@ -78,12 +78,31 @@ on_error:
 }
 #endif
 
-ogs_socket_t ogs_tun_open(char *ifname, int maxlen, int is_tap)
+int ogs_netns_enter(const char *netns, ogs_socket_t *old_netns_fd)
+{
+    ogs_error("Network namespace is not supported on this platform");
+    return OGS_ERROR;
+}
+
+int ogs_netns_restore(ogs_socket_t old_netns_fd)
+{
+    ogs_error("Network namespace is not supported on this platform");
+    return OGS_ERROR;
+}
+
+ogs_socket_t ogs_tun_open(
+        char *ifname, int maxlen, int is_tap, const char *netns)
 {
     ogs_socket_t fd = INVALID_SOCKET;
     int unit;
 
     ogs_assert(ifname);
+
+    if (netns) {
+        ogs_error("Network namespace for TUN/TAP is not supported "
+                "on this platform : netns[%s]", netns);
+        return INVALID_SOCKET;
+    }
 
 #define TUNTAP_ID_MAX 256
     for (unit = 0; unit < TUNTAP_ID_MAX; unit++) {

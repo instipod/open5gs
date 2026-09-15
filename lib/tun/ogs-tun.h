@@ -45,8 +45,22 @@ extern "C" {
  */
 #define OGS_TUN_MAX_HEADROOM 16
 
-ogs_socket_t ogs_tun_open(char *ifname, int maxlen, int is_tap);
+ogs_socket_t ogs_tun_open(
+        char *ifname, int maxlen, int is_tap, const char *netns);
 int ogs_tun_set_ip(char *ifname, ogs_ipsubnet_t *gw,  ogs_ipsubnet_t *sub);
+
+/*
+ * Switch the calling thread into the named network namespace
+ * (e.g. one created with `ip netns add <netns>`), so that a TUN/TAP
+ * device -- or any other network resource -- can be created or looked
+ * up inside it. Only implemented on Linux; other platforms fail if
+ * `netns` is non-NULL.
+ *
+ * On success, `*old_netns_fd` receives a handle to the caller's
+ * original namespace to be passed to ogs_netns_restore() afterwards.
+ */
+int ogs_netns_enter(const char *netns, ogs_socket_t *old_netns_fd);
+int ogs_netns_restore(ogs_socket_t old_netns_fd);
 
 ogs_pkbuf_t *ogs_tun_read(ogs_socket_t fd, ogs_pkbuf_pool_t *packet_pool);
 int ogs_tun_write(ogs_socket_t fd, ogs_pkbuf_t *pkbuf);

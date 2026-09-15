@@ -761,6 +761,7 @@ int ogs_pfcp_context_parse_config(const char *local, const char *remote)
                         const char *mask_or_numbits = NULL;
                         const char *dnn = NULL;
                         const char *dev = self.tun_ifname;
+                        const char *netns = self.tun_netns;
                         const char *low[OGS_MAX_NUM_OF_SUBNET_RANGE];
                         const char *high[OGS_MAX_NUM_OF_SUBNET_RANGE];
                         int i, num = 0;
@@ -803,6 +804,8 @@ int ogs_pfcp_context_parse_config(const char *local, const char *remote)
                                 dnn = ogs_yaml_iter_value(&subnet_iter);
                             } else if (!strcmp(subnet_key, "dev")) {
                                 dev = ogs_yaml_iter_value(&subnet_iter);
+                            } else if (!strcmp(subnet_key, "netns")) {
+                                netns = ogs_yaml_iter_value(&subnet_iter);
                             } else if (!strcmp(subnet_key, "range")) {
                                 ogs_yaml_iter_t range_iter;
                                 ogs_yaml_iter_recurse(
@@ -842,7 +845,8 @@ int ogs_pfcp_context_parse_config(const char *local, const char *remote)
                         }
 
                         subnet = ogs_pfcp_subnet_add(
-                                ipstr, mask_or_numbits, gateway, dnn, dev);
+                                ipstr, mask_or_numbits, gateway, dnn, dev,
+                                netns);
                         ogs_assert(subnet);
 
                         subnet->num_of_range = num;
@@ -2680,7 +2684,7 @@ void ogs_pfcp_ue_ip_free(ogs_pfcp_ue_ip_t *ue_ip)
     }
 }
 
-ogs_pfcp_dev_t *ogs_pfcp_dev_add(const char *ifname)
+ogs_pfcp_dev_t *ogs_pfcp_dev_add(const char *ifname, const char *netns)
 {
     ogs_pfcp_dev_t *dev = NULL;
 
@@ -2691,6 +2695,8 @@ ogs_pfcp_dev_t *ogs_pfcp_dev_add(const char *ifname)
     memset(dev, 0, sizeof *dev);
 
     ogs_cpystrn(dev->ifname, ifname, OGS_MAX_IFNAME_LEN-1);
+    if (netns)
+        ogs_cpystrn(dev->netns, netns, OGS_MAX_NETNS_LEN-1);
 
     ogs_list_add(&self.dev_list, dev);
 
@@ -2729,7 +2735,8 @@ ogs_pfcp_dev_t *ogs_pfcp_dev_find_by_ifname(const char *ifname)
 
 ogs_pfcp_subnet_t *ogs_pfcp_subnet_add(
         const char *ipstr, const char *mask_or_numbits,
-        const char *gateway, const char *dnn, const char *ifname)
+        const char *gateway, const char *dnn, const char *ifname,
+        const char *netns)
 {
     int rv;
     ogs_pfcp_dev_t *dev = NULL;
@@ -2739,7 +2746,12 @@ ogs_pfcp_subnet_t *ogs_pfcp_subnet_add(
 
     dev = ogs_pfcp_dev_find_by_ifname(ifname);
     if (!dev)
-        dev = ogs_pfcp_dev_add(ifname);
+        dev = ogs_pfcp_dev_add(ifname, netns);
+    else if ((netns && strcmp(dev->netns, netns) != 0) ||
+            (!netns && dev->netns[0]))
+        ogs_warn("TUN device `%s` requested with conflicting netns "
+                "(`%s` vs `%s`); keeping the first one",
+                ifname, dev->netns, netns ? netns : "(none)");
     ogs_assert(dev);
 
     ogs_pool_alloc(&ogs_pfcp_subnet_pool, &subnet);

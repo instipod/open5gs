@@ -22,11 +22,25 @@
 #undef OGS_LOG_DOMAIN
 #define OGS_LOG_DOMAIN __ogs_sock_domain
 
-ogs_socket_t ogs_tun_open(char *ifname, int len, int is_tap)
+ogs_socket_t ogs_tun_open(char *ifname, int len, int is_tap, const char *netns)
 {
     ogs_error("Not implemented");
     ogs_assert_if_reached();
     return INVALID_SOCKET;
+}
+
+int ogs_netns_enter(const char *netns, ogs_socket_t *old_netns_fd)
+{
+    ogs_error("Not implemented");
+    ogs_assert_if_reached();
+    return OGS_ERROR;
+}
+
+int ogs_netns_restore(ogs_socket_t old_netns_fd)
+{
+    ogs_error("Not implemented");
+    ogs_assert_if_reached();
+    return OGS_ERROR;
 }
 
 int ogs_tun_set_ip(char *ifname, ogs_ipsubnet_t *gw, ogs_ipsubnet_t *sub)

@@ -1923,14 +1923,27 @@ int upf_gtp_open(void)
     /* Open Tun interface */
     ogs_list_for_each(&ogs_pfcp_self()->dev_list, dev) {
         dev->is_tap = strstr(dev->ifname, "tap");
-        dev->fd = ogs_tun_open(dev->ifname, OGS_MAX_IFNAME_LEN, dev->is_tap);
+        dev->fd = ogs_tun_open(dev->ifname, OGS_MAX_IFNAME_LEN, dev->is_tap,
+                dev->netns[0] ? dev->netns : NULL);
         if (dev->fd == INVALID_SOCKET) {
             ogs_error("tun_open(dev:%s) failed", dev->ifname);
             return OGS_ERROR;
         }
 
         if (dev->is_tap) {
-            _get_dev_mac_addr(dev->ifname, dev->mac_addr);
+            if (dev->netns[0]) {
+                ogs_socket_t old_netns_fd;
+                if (ogs_netns_enter(dev->netns, &old_netns_fd) == OGS_OK) {
+                    _get_dev_mac_addr(dev->ifname, dev->mac_addr);
+                    ogs_netns_restore(old_netns_fd);
+                } else {
+                    ogs_error("ogs_netns_enter() failed : netns[%s]",
+                            dev->netns);
+                    return OGS_ERROR;
+                }
+            } else {
+                _get_dev_mac_addr(dev->ifname, dev->mac_addr);
+            }
             dev->poll = ogs_pollset_add(ogs_app()->pollset,
                     OGS_POLLIN, dev->fd, _gtpv1_tun_recv_eth_cb, NULL);
             ogs_assert(dev->poll);

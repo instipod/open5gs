@@ -89,3 +89,21 @@ upf:
 #    - subnet: 2001:db8:babe::/48
 #      dnn: ims
 #      dev: ogstun3
+#
+################################################################################
+# TUN/TAP device in a separate network namespace (Linux only)
+################################################################################
+#
+#  o Isolate UE traffic by creating the TUN device inside its own
+#    network namespace instead of the host's default namespace.
+#    The namespace must already exist (e.g. `ip netns add ue-net`)
+#    and UPF must have CAP_SYS_ADMIN (typically run as root) to
+#    join it. Once created, configure the interface's IP address
+#    and any further routing/NAT from inside that namespace, e.g.
+#    `ip netns exec ue-net ip addr add 10.45.0.1/16 dev ogstun`.
+#
+#  session:
+#    - subnet: 10.45.0.0/16
+#      gateway: 10.45.0.1
+#      dev: ogstun
+#      netns: ue-net

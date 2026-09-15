@@ -45,6 +45,7 @@ typedef struct ogs_pfcp_context_s {
     uint32_t        pfcp_port;      /* PFCP local port */
 
     const char      *tun_ifname;    /* PFCP TUN Interface Name */
+    const char      *tun_netns;     /* PFCP TUN Network Namespace */
 
     ogs_list_t      pfcp_list;      /* PFCP IPv4 Server List */
     ogs_list_t      pfcp_list6;     /* PFCP IPv6 Server List */
@@ -370,6 +371,7 @@ typedef struct ogs_pfcp_dev_s {
     ogs_lnode_t     lnode;
 
     char            ifname[OGS_MAX_IFNAME_LEN];
+    char            netns[OGS_MAX_NETNS_LEN]; /* Network Namespace, empty = default */
     ogs_socket_t    fd;
 
     ogs_poll_t      *poll;
@@ -525,14 +527,15 @@ ogs_pfcp_ue_ip_t *ogs_pfcp_ue_ip_alloc(
         uint8_t *cause_value, int family, const char *dnn, uint8_t *addr);
 void ogs_pfcp_ue_ip_free(ogs_pfcp_ue_ip_t *ip);
 
-ogs_pfcp_dev_t *ogs_pfcp_dev_add(const char *ifname);
+ogs_pfcp_dev_t *ogs_pfcp_dev_add(const char *ifname, const char *netns);
 void ogs_pfcp_dev_remove(ogs_pfcp_dev_t *dev);
 void ogs_pfcp_dev_remove_all(void);
 ogs_pfcp_dev_t *ogs_pfcp_dev_find_by_ifname(const char *ifname);
 
 ogs_pfcp_subnet_t *ogs_pfcp_subnet_add(
         const char *ipstr, const char *mask_or_numbits,
-        const char *gateway, const char *dnn, const char *ifname);
+        const char *gateway, const char *dnn, const char *ifname,
+        const char *netns);
 ogs_pfcp_subnet_t *ogs_pfcp_subnet_next(ogs_pfcp_subnet_t *subnet);
 void ogs_pfcp_subnet_remove(ogs_pfcp_subnet_t *subnet);
 void ogs_pfcp_subnet_remove_all(void);
