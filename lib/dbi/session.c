@@ -251,6 +251,64 @@ done:
                 }
 
             }
+        } else if (!strcmp(child4_key, OGS_IPV4_FRAMED_ROUTES_STRING) &&
+            BSON_ITER_HOLDS_ARRAY(&child4_iter)) {
+            int i = 0;
+
+            /*
+             * Framed routes are subscriber data and the same field is also
+             * parsed by ogs_dbi_subscription_data() (lib/dbi/subscription.c).
+             * They are read here as well because in EPC only the PCRF can
+             * deliver them to the PGW-C: S6a and GTPv2 have no room for them,
+             * so the PCRF sends them in the Gx CCA (Framed-Route /
+             * Framed-IPv6-Route). See the comment on ogs_session_t in
+             * lib/proto/types.h.
+             *
+             * The PCF also goes through this function but does not use the
+             * result: in 5GC the SMF gets framed routes from the UDM.
+             *
+             * session_data is memset() by the caller, so there is nothing to
+             * free before allocating.
+             */
+            session->ipv4_framed_routes = ogs_calloc(
+                    OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDI,
+                    sizeof(session->ipv4_framed_routes[0]));
+            ogs_assert(session->ipv4_framed_routes);
+
+            bson_iter_recurse(&child4_iter, &child5_iter);
+            while (bson_iter_next(&child5_iter) &&
+                    i < OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDI) {
+                const char *route;
+
+                if (!BSON_ITER_HOLDS_UTF8(&child5_iter))
+                    continue;
+                route = bson_iter_utf8(&child5_iter, &length);
+                session->ipv4_framed_routes[i] = ogs_strndup(route, length);
+                ogs_assert(session->ipv4_framed_routes[i]);
+                i++;
+            }
+        } else if (!strcmp(child4_key, OGS_IPV6_FRAMED_ROUTES_STRING) &&
+            BSON_ITER_HOLDS_ARRAY(&child4_iter)) {
+            int i = 0;
+
+            /* Same as ipv4_framed_routes above */
+            session->ipv6_framed_routes = ogs_calloc(
+                    OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDI,
+                    sizeof(session->ipv6_framed_routes[0]));
+            ogs_assert(session->ipv6_framed_routes);
+
+            bson_iter_recurse(&child4_iter, &child5_iter);
+            while (bson_iter_next(&child5_iter) &&
+                    i < OGS_MAX_NUM_OF_FRAMED_ROUTES_IN_PDI) {
+                const char *route;
+
+                if (!BSON_ITER_HOLDS_UTF8(&child5_iter))
+                    continue;
+                route = bson_iter_utf8(&child5_iter, &length);
+                session->ipv6_framed_routes[i] = ogs_strndup(route, length);
+                ogs_assert(session->ipv6_framed_routes[i]);
+                i++;
+            }
         } else if (!strcmp(child4_key, OGS_PCC_RULE_STRING) &&
             BSON_ITER_HOLDS_ARRAY(&child4_iter)) {
             int i, pcc_rule_index = 0;
