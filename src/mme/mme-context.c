@@ -1788,6 +1788,19 @@ int mme_context_parse_config(void)
                                 if (count)
                                     num_of_list0++;
                             }
+
+                            if (timezone_str) {
+                                ogs_cpystrn(
+                                    self.served_tai[self.num_of_served_tai].
+                                        timezone,
+                                    timezone_str,
+                                    sizeof(self.served_tai[
+                                        self.num_of_served_tai].timezone));
+                                self.served_tai[self.num_of_served_tai].
+                                    has_timezone = true;
+                                ogs_info("Configured timezone for TAI: %s",
+                                    timezone_str);
+                            }
                         } else {
                             ogs_warn("Ignore tai : mcc(%p), mnc(%p), "
                                     "num_of_tac(%d)", mcc, mnc, num_of_tac);
@@ -1796,12 +1809,6 @@ int mme_context_parse_config(void)
                             YAML_SEQUENCE_NODE);
 
                     if (list2->num || num_of_list1 || num_of_list0) {
-                        if (timezone_str) {
-                            ogs_cpystrn(self.served_tai[self.num_of_served_tai].timezone,
-                                timezone_str, sizeof(self.served_tai[self.num_of_served_tai].timezone));
-                            self.served_tai[self.num_of_served_tai].has_timezone = true;
-                            ogs_info("Configured timezone for TAI: %s", timezone_str);
-                        }
                         self.num_of_served_tai++;
                     }
                 } else if (!strcmp(mme_key, "access_control")) {
